@@ -1,15 +1,7 @@
 import sqlite3
-from config import Config
+from backend.config import Config
 
-def get_db_connection():
+def get_connection():
     conn = sqlite3.connect(Config.DATABASE)
-    conn.row_factory = sqlite3.Row
+    conn.row_factory = sqlite3.Row  # access columns by name
     return conn
-
-    // change this ayesha based on what you use..
-// sqlite3 is definitely easier than postgresql just a heads up
-def get_db_connection():
-
-# database connection will be implemented later
-
-pass
