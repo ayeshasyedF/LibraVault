@@ -67,3 +67,22 @@ CREATE TABLE Reservations (
     FOREIGN KEY (user_id) REFERENCES Users(user_id),
     FOREIGN KEY (book_id) REFERENCES Books(book_id)
 );
+
+-- =========================
+-- Imported Books Dataset Table
+-- =========================
+
+CREATE TABLE ImportedBooks (
+    bookID INTEGER PRIMARY KEY,
+    title TEXT,
+    authors TEXT,
+    average_rating REAL,
+    isbn TEXT,
+    isbn13 TEXT,
+    language_code TEXT,
+    num_pages INTEGER,
+    ratings_count INTEGER,
+    text_reviews_count INTEGER,
+    publication_date TEXT,
+    publisher TEXT
+);
