@@ -1,5 +1,5 @@
 import sqlite3
-from backend.config import Config
+from config import Config 
 
 def get_connection():
     conn = sqlite3.connect(Config.DATABASE)

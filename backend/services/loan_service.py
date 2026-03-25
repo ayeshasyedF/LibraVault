@@ -1,5 +1,5 @@
-from backend.database.db_connection import get_connection
-from datetime import datetime, timedelta
+from database.db_connection import get_connection
+from datetime import datetime, timedelta, date
 
 # Borrow a book
 def borrow_book(user_id, book_id):

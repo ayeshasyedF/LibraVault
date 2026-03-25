@@ -1,4 +1,4 @@
-from backend.database.db_connection import get_connection
+from database.db_connection import get_connection
 
 def get_all_books():
     conn = get_connection()

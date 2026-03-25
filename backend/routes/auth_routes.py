@@ -1,7 +1,6 @@
 from flask import Blueprint, request, jsonify
 import sqlite3
-from backend.database.db_connection import get_connection
-
+from database.db_connection import get_connection
 auth_routes = Blueprint("auth", __name__)
 
 @auth_routes.route("/register", methods=["POST"])

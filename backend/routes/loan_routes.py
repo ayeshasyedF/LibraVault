@@ -1,5 +1,5 @@
 from flask import Blueprint, jsonify, request
-from backend.services.loan_service import borrow_book, return_book, reserve_book
+from services.loan_service import borrow_book, return_book, reserve_book
 
 loan_routes = Blueprint("loans", __name__)
 

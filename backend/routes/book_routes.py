@@ -1,5 +1,5 @@
 from flask import Blueprint, jsonify, request
-from backend.services.book_service import get_all_books, get_book_by_id, search_books
+from services.book_service import get_all_books, get_book_by_id, search_books
 
 book_routes = Blueprint("books", __name__)
 

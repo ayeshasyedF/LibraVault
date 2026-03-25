@@ -1,10 +1,10 @@
 from flask import Flask
 # backend/app.py
-from backend.config import Config
+from config import Config
 
-from backend.routes.book_routes import book_routes
-from backend.routes.loan_routes import loan_routes
-from backend.routes.auth_routes import auth_routes
+from routes.book_routes import book_routes
+from routes.loan_routes import loan_routes
+from routes.auth_routes import auth_routes
 
 app = Flask(__name__)
 app.config.from_object(Config)
