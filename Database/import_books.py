@@ -1,44 +1,62 @@
+from flask import Flask, jsonify, request
 import sqlite3
-import pandas as pd
+import os
 
-csv_path = "books.csv"
-db_path = "../library.db"
+app = Flask(__name__)
 
-df = pd.read_csv(csv_path, on_bad_lines="skip")
-df.columns = [col.strip() for col in df.columns]
+# DB path
+DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "library.db")
 
-conn = sqlite3.connect(db_path)
-cursor = conn.cursor()
+def get_db_connection():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
 
-# Clear existing data (optional but recommended for testing)
-cursor.execute("DELETE FROM Books")
-cursor.execute("DELETE FROM BookCopies")
+@app.route("/books", methods=["GET"])
+def list_books():
+    """List all books with their availability"""
+    conn = get_db_connection()
+    books = conn.execute("""
+        SELECT b.book_id, b.title,
+               COUNT(bc.copy_id) as total_copies,
+               SUM(CASE WHEN bc.status='available' THEN 1 ELSE 0 END) as available_copies
+        FROM Books b
+        LEFT JOIN BookCopies bc ON b.book_id = bc.book_id
+        GROUP BY b.book_id
+    """).fetchall()
+    conn.close()
 
-# Insert into Books
-for _, row in df.iterrows():
-    cursor.execute("""
-        INSERT INTO Books (title, isbn, author, category, publisher, publication_year, description)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (
-        row.get("title"),
-        row.get("isbn"),
-        row.get("authors"),
-        None,  # category (not in CSV)
-        row.get("publisher"),
-        None,  # publication_year (optional parse)
-        None   # description
-    ))
+    return jsonify([dict(book) for book in books])
 
-    book_id = cursor.lastrowid
+@app.route("/borrow/<int:book_id>", methods=["POST"])
+def borrow_book(book_id):
+    """Borrow a book if available"""
+    conn = get_db_connection()
+    copy = conn.execute("""
+        SELECT copy_id FROM BookCopies
+        WHERE book_id = ? AND status = 'available'
+        LIMIT 1
+    """, (book_id,)).fetchone()
 
-    # Create copies (3 per book)
-    for i in range(3):
-        cursor.execute("""
-            INSERT INTO BookCopies (book_id, status, location)
-            VALUES (?, 'available', 'Main Library')
-        """, (book_id,))
+    if copy is None:
+        conn.close()
+        return jsonify({"error": "No copies available"}), 400
 
-conn.commit()
-conn.close()
+    # Mark as borrowed
+    conn.execute("UPDATE BookCopies SET status = 'borrowed' WHERE copy_id = ?", (copy["copy_id"],))
+    conn.commit()
+    conn.close()
 
-print("Books and copies imported successfully.")
+    return jsonify({"message": f"Book {book_id} borrowed successfully", "copy_id": copy["copy_id"]})
+
+@app.route("/return/<int:copy_id>", methods=["POST"])
+def return_book(copy_id):
+    """Return a borrowed book"""
+    conn = get_db_connection()
+    conn.execute("UPDATE BookCopies SET status = 'available' WHERE copy_id = ?", (copy_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({"message": f"Copy {copy_id} returned successfully"})
+
+if __name__ == "__main__":
+    app.run(debug=True)
