@@ -1,25 +1,44 @@
 import sqlite3
 import pandas as pd
 
-# File paths
-csv_path = "Database/books.csv"
-db_path = "library.db"
+csv_path = "books.csv"
+db_path = "../library.db"
 
-# Read CSV safely
 df = pd.read_csv(csv_path, on_bad_lines="skip")
-
-# Optional: clean column names
 df.columns = [col.strip() for col in df.columns]
 
-# Connect to SQLite
 conn = sqlite3.connect(db_path)
+cursor = conn.cursor()
 
-# Replace the old imported table with a clean one
-df.to_sql("ImportedBooks", conn, if_exists="replace", index=False)
+# Clear existing data (optional but recommended for testing)
+cursor.execute("DELETE FROM Books")
+cursor.execute("DELETE FROM BookCopies")
 
-# Quick verification
-count = pd.read_sql_query("SELECT COUNT(*) AS count FROM ImportedBooks", conn)
-print(count)
+# Insert into Books
+for _, row in df.iterrows():
+    cursor.execute("""
+        INSERT INTO Books (title, isbn, author, category, publisher, publication_year, description)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (
+        row.get("title"),
+        row.get("isbn"),
+        row.get("authors"),
+        None,  # category (not in CSV)
+        row.get("publisher"),
+        None,  # publication_year (optional parse)
+        None   # description
+    ))
 
+    book_id = cursor.lastrowid
+
+    # Create copies (3 per book)
+    for i in range(3):
+        cursor.execute("""
+            INSERT INTO BookCopies (book_id, status, location)
+            VALUES (?, 'available', 'Main Library')
+        """, (book_id,))
+
+conn.commit()
 conn.close()
-print("Import complete.")
+
+print("Books and copies imported successfully.")
