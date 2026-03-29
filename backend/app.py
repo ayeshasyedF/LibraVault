@@ -1,21 +1,34 @@
+from pathlib import Path
 from flask import Flask
-# backend/app.py
 from config import Config
 
 from routes.book_routes import book_routes
 from routes.loan_routes import loan_routes
 from routes.auth_routes import auth_routes
 
-app = Flask(__name__)
+BASE_DIR = Path(__file__).resolve().parent.parent
+FRONTEND_DIR = BASE_DIR / "frontend"
+
+app = Flask(
+    __name__,
+    static_folder=str(FRONTEND_DIR),
+    static_url_path=""
+)
+
 app.config.from_object(Config)
 
-app.register_blueprint(book_routes)
-app.register_blueprint(loan_routes)
-app.register_blueprint(auth_routes)
+# Put backend routes under /api so they do not clash with frontend pages
+app.register_blueprint(book_routes, url_prefix="/api")
+app.register_blueprint(loan_routes, url_prefix="/api")
+app.register_blueprint(auth_routes, url_prefix="/api")
 
 @app.route("/")
 def home():
-    return {"message": "Library backend running"}
+    return app.send_static_file("index.html")
+
+@app.route("/health")
+def health():
+    return {"message": "Library app running"}
 
 if __name__ == "__main__":
     app.run(debug=True)

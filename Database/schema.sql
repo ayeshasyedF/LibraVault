@@ -2,7 +2,7 @@
 -- Users Table
 -- =========================
 
-CREATE TABLE Users (
+CREATE TABLE IF NOT EXISTS Users (
     user_id INTEGER PRIMARY KEY AUTOINCREMENT,
     full_name TEXT NOT NULL,
     email TEXT UNIQUE NOT NULL,
@@ -15,22 +15,30 @@ CREATE TABLE Users (
 -- Books Table
 -- =========================
 
-CREATE TABLE Books (
+CREATE TABLE IF NOT EXISTS Books (
     book_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    slug TEXT UNIQUE,                 
     title TEXT NOT NULL,
     isbn TEXT,
     author TEXT,
-    category TEXT,
-    publisher TEXT,
+    category TEXT,                    
+    collection_name TEXT,             
+    book_format TEXT,                 
     publication_year INTEGER,
-    description TEXT
+    pages INTEGER,
+    rating REAL,
+    cover_url TEXT,
+    blurb TEXT,
+    description TEXT,
+    accent TEXT,
+    publisher TEXT
 );
 
 -- =========================
 -- Book Copies Table
 -- =========================
 
-CREATE TABLE BookCopies (
+CREATE TABLE IF NOT EXISTS BookCopies (
     copy_id INTEGER PRIMARY KEY AUTOINCREMENT,
     book_id INTEGER,
     status TEXT,
@@ -41,8 +49,7 @@ CREATE TABLE BookCopies (
 -- =========================
 -- Loans Table
 -- =========================
-
-CREATE TABLE Loans (
+CREATE TABLE IF NOT EXISTS Loans (
     loan_id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER,
     copy_id INTEGER,
@@ -58,7 +65,7 @@ CREATE TABLE Loans (
 -- Reservations Table
 -- =========================
 
-CREATE TABLE Reservations (
+CREATE TABLE IF NOT EXISTS Reservations (
     reservation_id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER,
     book_id INTEGER,
@@ -72,7 +79,7 @@ CREATE TABLE Reservations (
 -- Imported Books Dataset Table
 -- =========================
 
-CREATE TABLE ImportedBooks (
+CREATE TABLE IF NOT EXISTS ImportedBooks (
     bookID INTEGER PRIMARY KEY,
     title TEXT,
     authors TEXT,
