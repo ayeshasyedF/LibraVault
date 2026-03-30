@@ -7,6 +7,7 @@ from services.loan_service import (
     get_user_reservations,
     get_user_loans,
     get_open_loans,
+    get_open_reservations,
 )
 
 loan_routes = Blueprint("loans", __name__)
@@ -83,3 +84,7 @@ def user_loans(user_id):
 @loan_routes.route("/loans/open", methods=["GET"])
 def open_loans():
     return jsonify(get_open_loans())
+
+@loan_routes.route("/reservations/open", methods=["GET"])
+def open_reservations():
+    return jsonify(get_open_reservations())

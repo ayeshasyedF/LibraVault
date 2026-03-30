@@ -80,6 +80,21 @@ def borrow_book(user_id, book_id, due_days=14):
         conn.close()
         return {"error": "User not found"}
 
+    active_reservation = cursor.execute(
+        """
+        SELECT reservation_id, user_id
+        FROM Reservations
+        WHERE book_id = ? AND status = 'active'
+        ORDER BY reservation_date ASC, reservation_id ASC
+        LIMIT 1
+        """,
+        (book_id,)
+    ).fetchone()
+
+    if active_reservation and int(active_reservation["user_id"]) != int(user_id):
+        conn.close()
+        return {"error": "This title is reserved for another reader"}
+
     copy = cursor.execute(
         """
         SELECT copy_id
@@ -110,6 +125,11 @@ def borrow_book(user_id, book_id, due_days=14):
     cursor.execute(
         "UPDATE BookCopies SET status = 'borrowed' WHERE copy_id = ?",
         (copy["copy_id"],)
+    )
+
+    cursor.execute(
+        "UPDATE Reservations SET status = 'fulfilled' WHERE book_id = ? AND status = 'active'",
+        (book_id,)
     )
 
     conn.commit()
@@ -207,6 +227,14 @@ def reserve_book(user_id, book_id):
     conn = get_connection()
     cursor = conn.cursor()
 
+    user = cursor.execute(
+        "SELECT user_id FROM Users WHERE user_id = ?",
+        (user_id,)
+    ).fetchone()
+    if not user:
+        conn.close()
+        return {"error": "User not found"}
+
     book = cursor.execute(
         "SELECT book_id FROM Books WHERE book_id = ?",
         (book_id,)
@@ -227,6 +255,20 @@ def reserve_book(user_id, book_id):
     if existing:
         conn.close()
         return {"error": "You already have an active reservation for this book"}
+
+    active_reservation = cursor.execute(
+        """
+        SELECT reservation_id
+        FROM Reservations
+        WHERE book_id = ? AND status = 'active'
+        LIMIT 1
+        """,
+        (book_id,)
+    ).fetchone()
+
+    if active_reservation:
+        conn.close()
+        return {"error": "This book is already reserved"}
 
     today = date.today().isoformat()
 
@@ -260,3 +302,34 @@ def get_user_reservations(user_id):
 
     conn.close()
     return [dict(row) for row in rows]
+
+
+def get_open_reservations():
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    rows = cursor.execute(
+        """
+        SELECT
+            r.reservation_id,
+            r.user_id,
+            r.book_id,
+            r.reservation_date,
+            r.status,
+            u.full_name,
+            u.email
+        FROM Reservations r
+        JOIN Users u ON r.user_id = u.user_id
+        WHERE r.status = 'active'
+        ORDER BY r.reservation_date DESC, r.reservation_id DESC
+        """
+    ).fetchall()
+
+    result = []
+    for row in rows:
+        item = dict(row)
+        item["member_id"] = _member_id_for_user(item["user_id"])
+        result.append(item)
+
+    conn.close()
+    return result

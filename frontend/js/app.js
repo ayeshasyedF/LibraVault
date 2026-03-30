@@ -11,6 +11,7 @@
   let API_USER_RESERVATIONS = [];
   let API_USER_LOANS = [];
   let API_OPEN_LOANS = [];
+  let API_ACTIVE_RESERVATIONS = [];
   let API_READERS = [];
   let API_ADMINS = [];
   const REC_POOLS = (window.LibraryData && window.LibraryData.recommendationPools) || {};
@@ -307,6 +308,33 @@ async function fetchOpenLoansFromApi() {
   }
 }
 
+async function fetchActiveReservationsFromApi() {
+  try {
+    const response = await fetch("/api/reservations/open");
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const data = await response.json();
+
+    API_ACTIVE_RESERVATIONS = Array.isArray(data)
+      ? data.map((entry) => ({
+          reservationId: String(entry.reservation_id),
+          userId: String(entry.user_id),
+          bookId: String(entry.book_id),
+          reservationDate: entry.reservation_date,
+          reserverName: entry.full_name,
+          reserverEmail: entry.email,
+          memberId: entry.member_id
+        }))
+      : [];
+  } catch (error) {
+    console.error("Could not load active reservations from API:", error);
+    API_ACTIVE_RESERVATIONS = [];
+  }
+}
+
 async function registerApi({ name, email, password, role, adminKey = "" }) {
   return apiPost("/api/register", {
     full_name: normalizeName(name),
@@ -410,29 +438,53 @@ function findAdminById(id) {
     return API_OPEN_LOANS;
   }
 
+  function getActiveReservations() {
+    return API_ACTIVE_RESERVATIONS;
+  }
+
   function getLoanForBook(bookId) {
     return getOpenCirculation().find((entry) => String(entry.bookId) === String(bookId)) || null;
   }
 
-  function getAllBooks() {
-  return [...API_BOOKS].map((book) => {
-    const lookupId = book.book_id || book.id;
-    const loan = getLoanForBook(lookupId);
+  function getReservationForBook(bookId) {
+    return getActiveReservations().find((entry) => String(entry.bookId) === String(bookId)) || null;
+  }
 
-    return {
-      ...book,
-      available: !loan,
-      borrower: loan
-        ? {
-            name: loan.borrowerName,
-            email: loan.borrowerEmail,
-            memberId: loan.memberId,
-            dueDate: loan.dueDate
-          }
-        : null
-    };
-  });
-}
+  function getAllBooks() {
+    const currentUser = getUser();
+
+    return [...API_BOOKS].map((book) => {
+      const lookupId = book.book_id || book.id;
+      const loan = getLoanForBook(lookupId);
+      const reservation = getReservationForBook(lookupId);
+      const reservedByCurrentUser = Boolean(
+        reservation && currentUser && currentUser.role === "reader" && String(reservation.userId) === String(currentUser.id)
+      );
+
+      return {
+        ...book,
+        available: !loan && !reservation,
+        borrower: loan
+          ? {
+              name: loan.borrowerName,
+              email: loan.borrowerEmail,
+              memberId: loan.memberId,
+              dueDate: loan.dueDate
+            }
+          : null,
+        reservation: reservation
+          ? {
+              userId: reservation.userId,
+              name: reservation.reserverName,
+              email: reservation.reserverEmail,
+              memberId: reservation.memberId,
+              reservedAt: reservation.reservationDate
+            }
+          : null,
+        reservedByCurrentUser
+      };
+    });
+  }
 
   function getBookById(id) {
   return getAllBooks().find((book) => String(book.id) === String(id)) || null;
@@ -458,6 +510,7 @@ function getBookByBookId(bookId) {
 
     await fetchReadersFromApi();
     await fetchOpenLoansFromApi();
+    await fetchActiveReservationsFromApi();
     await fetchUserLoansFromApi();
     await fetchUserReservationsFromApi();
     await fetchBooksFromApi();
@@ -509,12 +562,13 @@ function getBookByBookId(bookId) {
       link.textContent = "Logout";
       link.setAttribute("href", "#");
 
-      link.onclick = (event) => {
+      link.onclick = async (event) => {
         event.preventDefault();
         setUser(null);
         API_USER_RESERVATIONS = [];
         API_USER_LOANS = [];
-        API_OPEN_LOANS = [];
+        await fetchOpenLoansFromApi();
+        await fetchActiveReservationsFromApi();
         toast("You have been signed out.");
         updateHeaderUserState();
         refreshReservationButtons();
@@ -562,11 +616,18 @@ function getBookByBookId(bookId) {
       });
 
       await fetchUserReservationsFromApi();
+      await fetchActiveReservationsFromApi();
+      await fetchBooksFromApi();
+      await fetchOpenLoansFromApi();
 
       toast(result.message || "Book reserved to your library account.");
-      refreshReservationButtons();
+      renderTopPicks();
+      renderCatalogPage();
+      renderRecommendationsPage();
+      renderAdminPage();
       renderAccountPage();
       renderBookDetailPage();
+      refreshReservationButtons();
     } catch (error) {
       toast(error.message);
     }
@@ -639,6 +700,7 @@ function getBookByBookId(bookId) {
 
     await fetchBooksFromApi();
     await fetchOpenLoansFromApi();
+    await fetchActiveReservationsFromApi();
 
     const currentUser = getUser();
     if (currentUser && currentUser.role === "reader") {
@@ -663,12 +725,12 @@ function getBookByBookId(bookId) {
 
   if (!user || user.role !== "admin") {
     toast("Admin access is required for circulation actions.");
-    return;
+    return false;
   }
 
   if (!bookId || !readerId) {
     toast("Please choose both a title and a reader account.");
-    return;
+    return false;
   }
 
   try {
@@ -678,11 +740,13 @@ function getBookByBookId(bookId) {
     });
 
     await fetchOpenLoansFromApi();
+    await fetchActiveReservationsFromApi();
     await fetchBooksFromApi();
 
     const currentUser = getUser();
     if (currentUser && currentUser.role === "reader") {
       await fetchUserLoansFromApi();
+      await fetchUserReservationsFromApi();
     }
 
     toast(result.message || "Book checked out successfully.");
@@ -690,8 +754,13 @@ function getBookByBookId(bookId) {
     renderCatalogPage();
     renderBookDetailPage();
     renderAccountPage();
+    renderTopPicks();
+    renderRecommendationsPage();
+    refreshReservationButtons();
+    return true;
   } catch (error) {
     toast(error.message);
+    return false;
   }
 }
 
@@ -707,11 +776,13 @@ function getBookByBookId(bookId) {
     const result = await apiPost(`/api/return-loan/${encodeURIComponent(loanId)}`, {});
 
     await fetchOpenLoansFromApi();
+    await fetchActiveReservationsFromApi();
     await fetchBooksFromApi();
 
     const currentUser = getUser();
     if (currentUser && currentUser.role === "reader") {
       await fetchUserLoansFromApi();
+      await fetchUserReservationsFromApi();
     }
 
     toast(result.message || "Book marked as returned.");
@@ -719,16 +790,55 @@ function getBookByBookId(bookId) {
     renderCatalogPage();
     renderBookDetailPage();
     renderAccountPage();
+    renderTopPicks();
+    renderRecommendationsPage();
+    refreshReservationButtons();
   } catch (error) {
     toast(error.message);
   }
 }
 
+  function getBookAvailabilityLabel(book) {
+    if (book.borrower) return "Currently on loan";
+    if (book.reservation) return book.reservedByCurrentUser ? "Reserved for you" : "Reserved";
+    return "Available now";
+  }
+
+  function getReserveButtonModel(book) {
+    if (book.reservedByCurrentUser) {
+      return {
+        text: "Reserved",
+        className: "btn-secondary is-static",
+        disabled: true
+      };
+    }
+
+    if (book.borrower) {
+      return {
+        text: "On loan",
+        className: "btn-secondary is-static",
+        disabled: true
+      };
+    }
+
+    if (book.reservation) {
+      return {
+        text: "Unavailable",
+        className: "btn-secondary is-static",
+        disabled: true
+      };
+    }
+
+    return {
+      text: "Reserve",
+      className: "btn-secondary js-reserve",
+      disabled: false
+    };
+  }
+
   function bookCard(book) {
-    const reserved = getUserReservations().some((entry) => String(entry.bookId) === String(book.book_id));
-    const availability = book.available ? "Available now" : "Currently on loan";
-    const buttonText = reserved ? "Reserved" : "Reserve";
-    const buttonClass = reserved ? "btn-secondary is-static" : "btn-secondary js-reserve";
+    const button = getReserveButtonModel(book);
+    const availability = getBookAvailabilityLabel(book);
 
     return `
       <article class="catalog-card">
@@ -752,8 +862,8 @@ function getBookByBookId(bookId) {
           <div class="catalog-status ${book.available ? "available" : "unavailable"}">${availability}</div>
           <div class="catalog-actions">
             <a class="ghost-link" href="book.html?id=${encodeURIComponent(book.id)}">View details</a>
-            <button class="${buttonClass}" data-book-id="${escapeHtml(String(book.book_id || ""))}" ${reserved ? "disabled" : ""}>
-              ${buttonText}
+            <button class="${button.className}" data-book-id="${escapeHtml(String(book.book_id || ""))}" ${button.disabled ? "disabled" : ""}>
+              ${button.text}
             </button>
           </div>
         </div>
@@ -762,10 +872,8 @@ function getBookByBookId(bookId) {
   }
 
   function recommendationCard(book, note) {
-    const reserved = getUserReservations().some((entry) => String(entry.bookId) === String(book.book_id));
-    const availability = book.available ? "Available now" : "Currently on loan";
-    const buttonText = reserved ? "Reserved" : "Reserve";
-    const buttonClass = reserved ? "btn-secondary is-static" : "btn-secondary js-reserve";
+    const button = getReserveButtonModel(book);
+    const availability = getBookAvailabilityLabel(book);
 
     return `
       <article class="catalog-card">
@@ -790,8 +898,8 @@ function getBookByBookId(bookId) {
           <div class="catalog-status ${book.available ? "available" : "unavailable"}">${availability}</div>
           <div class="catalog-actions">
             <a class="ghost-link" href="book.html?id=${encodeURIComponent(book.id)}">View details</a>
-            <button class="${buttonClass}" data-book-id="${escapeHtml(String(book.book_id || ""))}" ${reserved ? "disabled" : ""}>
-              ${buttonText}
+            <button class="${button.className}" data-book-id="${escapeHtml(String(book.book_id || ""))}" ${button.disabled ? "disabled" : ""}>
+              ${button.text}
             </button>
           </div>
         </div>
@@ -806,16 +914,18 @@ function getBookByBookId(bookId) {
   }
 
   function refreshReservationButtons() {
-    const ids = getUserReservations().map((entry) => String(entry.bookId));
-    $all(".js-reserve").forEach((button) => {
-      const reserved = ids.includes(String(button.dataset.bookId));
-      button.disabled = reserved;
-      button.textContent = reserved ? "Reserved" : "Reserve";
-      if (reserved) {
-        button.classList.add("is-static");
-      } else {
-        button.classList.remove("is-static");
+    $all("button[data-book-id]").forEach((button) => {
+      if (button.classList.contains("js-checkout-reservation")) {
+        return;
       }
+
+      const book = getBookByBookId(button.dataset.bookId);
+      if (!book) return;
+
+      const state = getReserveButtonModel(book);
+      button.disabled = state.disabled;
+      button.textContent = state.text;
+      button.className = state.className;
     });
   }
 
@@ -925,7 +1035,8 @@ function getBookByBookId(bookId) {
 
     recordBookView(book.id);
 
-    const reserved = getUserReservations().some((entry) => String(entry.bookId) === String(book.book_id));
+    const button = getReserveButtonModel(book);
+    const availability = getBookAvailabilityLabel(book);
     const user = getUser();
 
     shell.innerHTML = `
@@ -945,11 +1056,11 @@ function getBookByBookId(bookId) {
             <span class="meta-chip">${escapeHtml(book.pages)} pages</span>
           </div>
           <div class="catalog-status ${book.available ? "available" : "unavailable"}">
-            ${book.available ? "Available now" : "On loan, but you can still reserve it"}
+            ${availability}
           </div>
           <div class="book-actions">
-            <button class="btn js-reserve" data-book-id="${escapeHtml(String(book.book_id || ""))}" ${reserved ? "disabled" : ""}>
-              ${reserved ? "Reserved" : "Reserve this title"}
+            <button class="${button.className}" data-book-id="${escapeHtml(String(book.book_id || ""))}" ${button.disabled ? "disabled" : ""}>
+              ${button.text === "Reserve" ? "Reserve this title" : button.text}
             </button>
             <a class="btn-secondary" href="catalog.html">Back to catalog</a>
           </div>
@@ -965,10 +1076,15 @@ function getBookByBookId(bookId) {
         <article class="detail-panel">
           <span class="label">Borrowing notes</span>
           <h3>Reservation and renewal ready</h3>
-          <p>${book.available ? "This title is available for checkout or reservation." : "This title is currently checked out. Readers can still place a reservation from this page."}</p>
+          <p>${book.available ? "This title is available for checkout or reservation." : book.borrower ? "This title is currently checked out." : book.reservedByCurrentUser ? "This title is reserved for your account." : "This title is currently reserved and unavailable."}</p>
           ${
             user && user.role === "admin" && book.borrower
               ? `<p class="account-subline">Currently with <strong>${escapeHtml(book.borrower.name)}</strong> · ${escapeHtml(book.borrower.email)} · ${escapeHtml(book.borrower.memberId)} · Due ${formatDate(book.borrower.dueDate)}</p>`
+              : ""
+          }
+          ${
+            user && user.role === "admin" && book.reservation
+              ? `<p class="account-subline">Reserved by <strong>${escapeHtml(book.reservation.name)}</strong> · ${escapeHtml(book.reservation.email)} · ${escapeHtml(book.reservation.memberId)} · Since ${formatDate(book.reservation.reservedAt)}</p>`
               : ""
           }
         </article>
@@ -1007,7 +1123,9 @@ function getBookByBookId(bookId) {
     }
 
     const loans = getUserLoans();
+    const activeLoanIds = new Set(loans.map((loan) => String(loan.bookId)));
     const reservations = getUserReservations()
+      .filter((entry) => !activeLoanIds.has(String(entry.bookId)))
       .map((entry) => getBookByBookId(entry.bookId))
       .filter(Boolean);
     const loanCards = loans.length
@@ -1329,10 +1447,56 @@ function getReaderHistoryIds(user) {
     refreshReservationButtons();
   }
 
-  function renderRecommendationsPage() {
-    if (!$("#recResults")) return;
-    renderRecommendationResults();
+function renderRecommendationsPage() {
+  const resultNode = $("#recResults");
+  if (!resultNode) return;
+
+  const panel = resultNode.parentElement;
+  const panelLabel = panel ? panel.querySelector(".label") : null;
+  const panelTitle = panel ? panel.querySelector("h4") : null;
+  const panelCopy = panel ? panel.querySelector(".account-subline") : null;
+
+  const user = getUser();
+
+  if (!user) {
+    if (panelLabel) panelLabel.hidden = true;
+    if (panelTitle) panelTitle.hidden = true;
+    if (panelCopy) panelCopy.hidden = true;
+
+    resultNode.classList.remove("rec-results");
+    resultNode.innerHTML = `
+      <div class="empty-state">
+        <h3>Please login to view recommendations</h3>
+        <p>Personalized recommendations are shown for reader accounts after sign-in.</p>
+        <a class="btn" href="login.html">Go to login</a>
+      </div>
+    `;
+    return;
   }
+
+  if (user.role === "admin") {
+    if (panelLabel) panelLabel.hidden = true;
+    if (panelTitle) panelTitle.hidden = true;
+    if (panelCopy) panelCopy.hidden = true;
+
+    resultNode.classList.remove("rec-results");
+    resultNode.innerHTML = `
+      <div class="empty-state">
+        <h3>You are signed in as an admin</h3>
+        <p>Use the admin desk to add books, check titles in and out, view borrower records, and manage accounts.</p>
+        <a class="btn" href="admin.html">Open admin desk</a>
+      </div>
+    `;
+    return;
+  }
+
+  if (panelLabel) panelLabel.hidden = false;
+  if (panelTitle) panelTitle.hidden = false;
+  if (panelCopy) panelCopy.hidden = false;
+
+  resultNode.classList.add("rec-results");
+  renderRecommendationResults();
+}
 
   function renderSuggestionListPreview() {
     const node = $("#suggestionPreview");
@@ -1534,6 +1698,7 @@ function getReaderHistoryIds(user) {
     const readers = API_READERS;
     const admins = API_ADMINS;
     const openLoans = getOpenCirculation();
+    const reservations = getActiveReservations();
     const availableBooks = books.filter((book) => book.available);
 
     const checkoutOptions = availableBooks.length
@@ -1593,7 +1758,7 @@ function getReaderHistoryIds(user) {
             <h3>${escapeHtml(book.title)}</h3>
             <p>by ${escapeHtml(book.author)}</p>
           </div>
-          <span class="pill">${book.available ? "Available" : "Checked out"}</span>
+          <span class="pill">${book.borrower ? "Checked out" : book.reservation ? "Reserved" : "Available"}</span>
         </div>
         <div class="meta-list">
           <div><strong>Format:</strong> ${escapeHtml(book.format)}</div>
@@ -1602,6 +1767,9 @@ function getReaderHistoryIds(user) {
             book.borrower
               ? `<div><strong>Holder:</strong> ${escapeHtml(book.borrower.name)} · ${escapeHtml(book.borrower.email)}</div>
                  <div><strong>Due:</strong> ${formatDate(book.borrower.dueDate)}</div>`
+              : book.reservation
+              ? `<div><strong>Reserved for:</strong> ${escapeHtml(book.reservation.name)} · ${escapeHtml(book.reservation.email)}</div>
+                 <div><strong>Reserved on:</strong> ${formatDate(book.reservation.reservedAt)}</div>`
               : `<div><strong>Status:</strong> On shelf and ready for checkout</div>`
           }
         </div>
@@ -1627,6 +1795,28 @@ function getReaderHistoryIds(user) {
           )
           .join("")
       : `<div class="empty-state small"><p>No reader accounts have been created yet.</p></div>`;
+
+    const reservationCards = reservations.length
+      ? reservations
+          .map((reservation) => {
+            const book = getBookByBookId(reservation.bookId);
+            if (!book) return "";
+            return `
+              <article class="account-card compact-card">
+                <span class="label">Active reservation</span>
+                <h3>${escapeHtml(book.title)}</h3>
+                <p>by ${escapeHtml(book.author)}</p>
+                <p>${escapeHtml(reservation.reserverName)} · ${escapeHtml(reservation.reserverEmail)}</p>
+                <p class="field-note">${escapeHtml(reservation.memberId)} · Reserved ${formatDate(reservation.reservationDate)}</p>
+                <div class="catalog-actions compact">
+                  <a class="ghost-link" href="book.html?id=${encodeURIComponent(book.id)}">Open title</a>
+                  <button class="btn js-checkout-reservation" data-book-id="${escapeHtml(String(reservation.bookId))}" data-reader-id="${escapeHtml(String(reservation.userId))}" type="button">Check out</button>
+                </div>
+              </article>
+            `;
+          })
+          .join("")
+      : `<div class="empty-state small admin-empty"><p>No active reservations right now.</p></div>`;
 
     const adminCards = admins.length
       ? admins
@@ -1662,6 +1852,10 @@ function getReaderHistoryIds(user) {
           <div class="summary-card">
             <span class="label">Checked out</span>
             <strong>${openLoans.length}</strong>
+          </div>
+          <div class="summary-card">
+            <span class="label">Reserved</span>
+            <strong>${reservations.length}</strong>
           </div>
           <div class="summary-card">
             <span class="label">Accounts</span>
@@ -1752,7 +1946,7 @@ function getReaderHistoryIds(user) {
               </div>
               <div class="split-actions">
                 <button class="btn" type="submit" ${(availableBooks.length && readers.length) ? "" : "disabled"}>Check out book</button>
-                <span class="inline-stat">${availableBooks.length} titles available · ${readers.length} reader accounts</span>
+                <span class="inline-stat">${availableBooks.length} titles ready · ${readers.length} reader accounts</span>
               </div>
             </form>
 
@@ -1766,6 +1960,12 @@ function getReaderHistoryIds(user) {
           <span class="label">Live status</span>
           <h3>Books currently checked out</h3>
           <div class="loans-grid">${openLoanCards}</div>
+        </article>
+
+        <article class="admin-panel">
+          <span class="label">Reservation queue</span>
+          <h3>Reader reservations</h3>
+          <div class="loans-grid">${reservationCards}</div>
         </article>
 
         <article class="admin-panel">
@@ -1853,7 +2053,8 @@ if (addForm) {
           return;
         }
 
-        await checkOutBook(bookId, readerId, $("#checkoutDays").value);
+        const ok = await checkOutBook(bookId, readerId, $("#checkoutDays").value);
+        if (!ok) return;
         checkoutForm.reset();
         $("#checkoutDays").value = "14";
       });
@@ -1861,6 +2062,21 @@ if (addForm) {
 
     $all(".js-return-loan", shell).forEach((button) => {
       button.addEventListener("click", () => returnLoan(button.dataset.loanId));
+    });
+
+    $all(".js-checkout-reservation", shell).forEach((button) => {
+      button.addEventListener("click", async () => {
+        const bookId = button.dataset.bookId;
+        const readerId = button.dataset.readerId;
+
+        if (!bookId || !readerId) {
+          toast("This reservation is missing its book or reader reference.");
+          return;
+        }
+
+        const ok = await checkOutBook(bookId, readerId, 14);
+        if (!ok) return;
+      });
     });
 
     $all(".js-delete-reader", shell).forEach((button) => {
@@ -1959,6 +2175,7 @@ async function init() {
   await fetchUserReservationsFromApi();
   await fetchUserLoansFromApi();
   await fetchOpenLoansFromApi();
+  await fetchActiveReservationsFromApi();
   await fetchReadersFromApi();
   await fetchAdminsFromApi();
 
