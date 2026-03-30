@@ -36,8 +36,7 @@
       </nav>
 
       <div class="nav-actions">
-        <button class="ghost-link" type="button" data-logout hidden>Logout</button>
-        <a class="btn" href="login.html">Login</a>
+        <a class="btn" href="login.html" data-login-link>Login</a>
       </div>
     </div>
   </header>
@@ -47,7 +46,7 @@
       <article class="auth-copy">
         <div class="eyebrow">Nocturne access</div>
         <h2>Reader and admin accounts, wrapped in velvet, brass, and candlelight.</h2>
-        <p>This is still frontend-only for now, but the flows are designed to mirror a fuller system later. Readers can sign in, reserve books, renew loans, and manage their account. Admins can sign in, add books, manage circulation, view borrowers, and oversee library accounts.</p>
+        <p>Readers and admins can now create accounts, sign in, and reset passwords through the backend. Some library actions such as reservations and circulation are still being connected step by step.</p>
         <div class="hero-meta">
           <span class="meta-chip">Reader email + password</span>
           <span class="meta-chip">Admin email + password</span>
@@ -169,7 +168,7 @@
           <section class="auth-view" data-auth-panel="forgot" hidden>
             <span class="label">Forgot password</span>
             <h3>Reset your access</h3>
-            <p class="helper-note">Because this is still a frontend demo, this reset updates the saved password directly instead of sending a real email.</p>
+            <p class="helper-note">This reset updates your password through the backend. It does not send a real email yet.</p>
 
             <form id="forgotPasswordForm" class="login-form">
               <div class="role-toggle">

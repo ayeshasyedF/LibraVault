@@ -720,34 +720,32 @@ async function fetchBooksFromApi() {
   }
 
   function updateHeaderUserState() {
-    const user = getUser();
-    const loginLinks = $all("[data-login-link]");
-    const logoutButtons = $all("[data-logout]");
-    const adminLinks = $all("[data-admin-link]");
+  const user = getUser();
+  const loginLinks = $all("[data-login-link]");
+  const logoutButtons = $all("[data-logout]");
+  const adminLinks = $all("[data-admin-link]");
 
-    loginLinks.forEach((link) => {
-      if (user && user.role === "admin") {
-        link.textContent = "Admin Desk";
-        link.setAttribute("href", "admin.html");
-      } else if (user) {
-        link.textContent = "My Library";
-        link.setAttribute("href", "account.html");
-      } else {
-        link.textContent = "Login";
-        link.setAttribute("href", "login.html");
-      }
-    });
+  // Hide any separate logout buttons since you want just one top-right button
+  logoutButtons.forEach((button) => {
+    button.hidden = true;
+    button.onclick = null;
+  });
 
-    adminLinks.forEach((link) => {
-      link.hidden = !(user && user.role === "admin");
-    });
+  loginLinks.forEach((link) => {
+    if (user) {
+      link.textContent = "Logout";
+      link.setAttribute("href", "#");
 
-    logoutButtons.forEach((button) => {
-      button.hidden = !user;
-      button.onclick = () => {
+      link.onclick = (event) => {
+        event.preventDefault();
         setUser(null);
+        API_USER_RESERVATIONS = [];
         toast("You have been signed out.");
         updateHeaderUserState();
+        refreshReservationButtons();
+        renderAccountPage();
+        renderBookDetailPage();
+
         const page = document.body.dataset.page;
         if (page === "account" || page === "admin") {
           setTimeout(() => {
@@ -755,9 +753,17 @@ async function fetchBooksFromApi() {
           }, 250);
         }
       };
-    });
-  }
+    } else {
+      link.textContent = "Login";
+      link.setAttribute("href", "login.html");
+      link.onclick = null;
+    }
+  });
 
+  adminLinks.forEach((link) => {
+    link.hidden = !(user && user.role === "admin");
+  });
+}
   async function reserveBook(bookId) {
     const user = getUser();
 
