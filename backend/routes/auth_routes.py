@@ -1,10 +1,11 @@
-from flask import Blueprint, request, jsonify
-from werkzeug.security import generate_password_hash, check_password_hash
+from flask import Blueprint, current_app, jsonify, request, session
+from werkzeug.security import check_password_hash, generate_password_hash
+
+from auth_utils import get_session_user
 from database.db_connection import get_connection
 
-auth_routes = Blueprint("auth", __name__)
 
-ADMIN_CREATION_KEY = "nocturne-keepers-key"
+auth_routes = Blueprint("auth", __name__)
 
 
 def normalize_email(value):
@@ -12,8 +13,8 @@ def normalize_email(value):
 
 
 def make_user_payload(user):
-    role = user["role"] or "reader"
-    user_id = user["user_id"]
+    role = (user["role"] or "reader").lower()
+    user_id = int(user["user_id"])
 
     return {
         "user_id": user_id,
@@ -21,7 +22,7 @@ def make_user_payload(user):
         "email": user["email"],
         "role": role,
         "member_id": f"NL-{100000 + user_id}" if role == "reader" else None,
-        "staff_id": f"ADM-{user_id:03d}" if role == "admin" else None
+        "staff_id": f"ADM-{user_id:03d}" if role == "admin" else None,
     }
 
 
@@ -44,7 +45,7 @@ def register():
     if len(password) < 6:
         return jsonify({"error": "Password must be at least 6 characters"}), 400
 
-    if role == "admin" and admin_key != ADMIN_CREATION_KEY:
+    if role == "admin" and admin_key != current_app.config["ADMIN_CREATION_KEY"]:
         return jsonify({"error": "Invalid admin creation key"}), 403
 
     conn = get_connection()
@@ -76,6 +77,10 @@ def register():
     ).fetchone()
 
     conn.close()
+
+    session.clear()
+    session.permanent = True
+    session["user_id"] = int(user["user_id"])
 
     return jsonify({
         "message": "User registered",
@@ -111,10 +116,28 @@ def login():
     if requested_role and requested_role != actual_role:
         return jsonify({"error": f"This account is registered as {actual_role}, not {requested_role}"}), 403
 
+    session.clear()
+    session.permanent = True
+    session["user_id"] = int(user["user_id"])
+
     return jsonify({
         "message": "Login successful",
         "user": make_user_payload(user)
     })
+
+
+@auth_routes.route("/logout", methods=["POST"])
+def logout():
+    session.clear()
+    return jsonify({"message": "Logged out successfully"})
+
+
+@auth_routes.route("/me", methods=["GET"])
+def me():
+    user = get_session_user()
+    if not user:
+        return jsonify({"user": None})
+    return jsonify({"user": user})
 
 
 @auth_routes.route("/reset-password", methods=["POST"])

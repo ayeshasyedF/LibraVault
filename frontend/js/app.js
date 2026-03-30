@@ -129,12 +129,14 @@
   };
 }
 
+
 async function apiPost(url, payload) {
   const response = await fetch(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json"
     },
+    credentials: "same-origin",
     body: JSON.stringify(payload)
   });
 
@@ -147,6 +149,47 @@ async function apiPost(url, payload) {
   return data;
 }
 
+async function apiGet(url) {
+  const response = await fetch(url, {
+    method: "GET",
+    credentials: "same-origin"
+  });
+
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(data.error || data.message || `Request failed with status ${response.status}`);
+  }
+
+  return data;
+}
+
+async function apiDelete(url) {
+  const response = await fetch(url, {
+    method: "DELETE",
+    credentials: "same-origin"
+  });
+
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(data.error || data.message || `Request failed with status ${response.status}`);
+  }
+
+  return data;
+}
+
+async function fetchCurrentUserFromApi() {
+  try {
+    const data = await apiGet("/api/me");
+    const user = data.user ? buildSessionFromApiUser(data.user) : null;
+    setUser(user);
+    return user;
+  } catch (error) {
+    setUser(null);
+    return null;
+  }
+}
 async function loginApi({ email, password, role }) {
   return apiPost("/api/login", {
     email: normalizeEmail(email),
@@ -156,13 +199,7 @@ async function loginApi({ email, password, role }) {
 }
 async function fetchReadersFromApi() {
   try {
-    const response = await fetch("/api/users/readers");
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-
-    const data = await response.json();
+    const data = await apiGet("/api/users/readers");
 
     API_READERS = Array.isArray(data)
       ? data.map((user) => ({
@@ -181,13 +218,7 @@ async function fetchReadersFromApi() {
 
 async function fetchAdminsFromApi() {
   try {
-    const response = await fetch("/api/users/admins");
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-
-    const data = await response.json();
+    const data = await apiGet("/api/users/admins");
 
     API_ADMINS = Array.isArray(data)
       ? data.map((user) => ({
@@ -205,17 +236,7 @@ async function fetchAdminsFromApi() {
 }
 
 async function deleteUserApi(userId) {
-  const response = await fetch(`/api/users/${encodeURIComponent(userId)}`, {
-    method: "DELETE"
-  });
-
-  const data = await response.json().catch(() => ({}));
-
-  if (!response.ok) {
-    throw new Error(data.error || data.message || `Request failed with status ${response.status}`);
-  }
-
-  return data;
+  return apiDelete(`/api/users/${encodeURIComponent(userId)}`);
 }
 
 async function fetchUserReservationsFromApi() {
@@ -227,13 +248,7 @@ async function fetchUserReservationsFromApi() {
   }
 
   try {
-    const response = await fetch(`/api/users/${encodeURIComponent(user.id)}/reservations`);
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-
-    const data = await response.json();
+    const data = await apiGet(`/api/users/${encodeURIComponent(user.id)}/reservations`);
 
     API_USER_RESERVATIONS = Array.isArray(data)
       ? data.map((entry) => ({
@@ -256,13 +271,7 @@ async function fetchUserLoansFromApi() {
   }
 
   try {
-    const response = await fetch(`/api/users/${encodeURIComponent(user.id)}/loans`);
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-
-    const data = await response.json();
+    const data = await apiGet(`/api/users/${encodeURIComponent(user.id)}/loans`);
 
     API_USER_LOANS = Array.isArray(data)
       ? data.map((entry) => ({
@@ -282,13 +291,7 @@ async function fetchUserLoansFromApi() {
 
 async function fetchOpenLoansFromApi() {
   try {
-    const response = await fetch("/api/loans/open");
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-
-    const data = await response.json();
+    const data = await apiGet("/api/loans/open");
 
     API_OPEN_LOANS = Array.isArray(data)
       ? data.map((entry) => ({
@@ -310,13 +313,7 @@ async function fetchOpenLoansFromApi() {
 
 async function fetchActiveReservationsFromApi() {
   try {
-    const response = await fetch("/api/reservations/open");
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-
-    const data = await response.json();
+    const data = await apiGet("/api/reservations/open");
 
     API_ACTIVE_RESERVATIONS = Array.isArray(data)
       ? data.map((entry) => ({
@@ -379,13 +376,7 @@ async function resetPasswordApi({ email, password, role }) {
 
 async function fetchBooksFromApi() {
   try {
-    const response = await fetch("/api/books");
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-
-    const data = await response.json();
+    const data = await apiGet("/api/books");
     API_BOOKS = Array.isArray(data) ? data.map(normalizeApiBook) : [];
   } catch (error) {
     console.error("Could not load books from /api/books:", error);
@@ -564,14 +555,23 @@ function getBookByBookId(bookId) {
 
       link.onclick = async (event) => {
         event.preventDefault();
+
+        try {
+          await apiPost("/api/logout", {});
+        } catch (error) {
+          console.error("Logout failed:", error);
+        }
+
         setUser(null);
         API_USER_RESERVATIONS = [];
         API_USER_LOANS = [];
-        await fetchOpenLoansFromApi();
-        await fetchActiveReservationsFromApi();
+        API_OPEN_LOANS = [];
+        API_ACTIVE_RESERVATIONS = [];
+        API_READERS = [];
+        API_ADMINS = [];
+
         toast("You have been signed out.");
         updateHeaderUserState();
-        refreshReservationButtons();
         renderTopPicks();
         renderCatalogPage();
         renderAccountPage();
@@ -611,9 +611,7 @@ function getBookByBookId(bookId) {
     }
 
     try {
-      const result = await apiPost(`/api/reserve/${encodeURIComponent(bookId)}`, {
-        user_id: Number(user.id)
-      });
+      const result = await apiPost(`/api/reserve/${encodeURIComponent(bookId)}`, {});
 
       await fetchUserReservationsFromApi();
       await fetchActiveReservationsFromApi();
@@ -642,9 +640,7 @@ function getBookByBookId(bookId) {
   }
 
   try {
-    const result = await apiPost(`/api/renew/${encodeURIComponent(loanId)}`, {
-      user_id: Number(user.id)
-    });
+    const result = await apiPost(`/api/renew/${encodeURIComponent(loanId)}`, {});
 
     await fetchUserLoansFromApi();
     await fetchOpenLoansFromApi();
@@ -2169,15 +2165,24 @@ async function init() {
   activateNav();
   handleHomepageSearch();
   handleLoginPage();
+
+  await fetchCurrentUserFromApi();
   updateHeaderUserState();
 
   await fetchBooksFromApi();
-  await fetchUserReservationsFromApi();
-  await fetchUserLoansFromApi();
   await fetchOpenLoansFromApi();
   await fetchActiveReservationsFromApi();
-  await fetchReadersFromApi();
-  await fetchAdminsFromApi();
+
+  const user = getUser();
+  if (user && user.role === "reader") {
+    await fetchUserReservationsFromApi();
+    await fetchUserLoansFromApi();
+  }
+
+  if (user && user.role === "admin") {
+    await fetchReadersFromApi();
+    await fetchAdminsFromApi();
+  }
 
   renderTopPicks();
   renderCatalogPage();
