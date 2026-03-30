@@ -17,6 +17,8 @@
   const FALLBACK_BOOKS = (window.LibraryData && window.LibraryData.books) || [];
   let API_BOOKS = [];
   let API_USER_RESERVATIONS = [];
+  let API_USER_LOANS = [];
+  let API_OPEN_LOANS = [];
   const REC_POOLS = (window.LibraryData && window.LibraryData.recommendationPools) || {};
 
   function $(selector, scope = document) {
@@ -289,6 +291,67 @@ async function fetchUserReservationsFromApi() {
   }
 }
 
+async function fetchUserLoansFromApi() {
+  const user = getUser();
+
+  if (!user || user.role !== "reader") {
+    API_USER_LOANS = [];
+    return;
+  }
+
+  try {
+    const response = await fetch(`/api/users/${encodeURIComponent(user.id)}/loans`);
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const data = await response.json();
+
+    API_USER_LOANS = Array.isArray(data)
+      ? data.map((entry) => ({
+          loanId: String(entry.loan_id),
+          bookId: String(entry.book_id),
+          copyId: String(entry.copy_id),
+          checkedOutAt: entry.borrow_date,
+          dueDate: entry.due_date,
+          renewals: Number(entry.renewal_count || 0)
+        }))
+      : [];
+  } catch (error) {
+    console.error("Could not load loans from API:", error);
+    API_USER_LOANS = [];
+  }
+}
+
+async function fetchOpenLoansFromApi() {
+  try {
+    const response = await fetch("/api/loans/open");
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const data = await response.json();
+
+    API_OPEN_LOANS = Array.isArray(data)
+      ? data.map((entry) => ({
+          loanId: String(entry.loan_id),
+          bookId: String(entry.book_id),
+          borrowerName: entry.full_name,
+          borrowerEmail: entry.email,
+          memberId: entry.member_id,
+          checkedOutAt: entry.borrow_date,
+          dueDate: entry.due_date,
+          renewals: Number(entry.renewal_count || 0)
+        }))
+      : [];
+  } catch (error) {
+    console.error("Could not load open loans from API:", error);
+    API_OPEN_LOANS = [];
+  }
+}
+
 async function registerApi({ name, email, password, role, adminKey = "" }) {
   return apiPost("/api/register", {
     full_name: normalizeName(name),
@@ -413,16 +476,18 @@ async function fetchBooksFromApi() {
 
 
   function getOpenCirculation() {
-    return getCirculation().filter((entry) => !entry.returnedAt);
+    return API_OPEN_LOANS;
   }
 
   function getLoanForBook(bookId) {
-    return getOpenCirculation().find((entry) => entry.bookId === bookId) || null;
+    return getOpenCirculation().find((entry) => String(entry.bookId) === String(bookId)) || null;
   }
 
   function getAllBooks() {
   return [...API_BOOKS, ...getAddedBooks()].map((book) => {
-    const loan = getLoanForBook(book.id);
+    const lookupId = book.book_id || book.id;
+    const loan = getLoanForBook(lookupId);
+
     return {
       ...book,
       available: !loan,
@@ -436,15 +501,15 @@ async function fetchBooksFromApi() {
         : null
     };
   });
-  }
+}
 
   function getBookById(id) {
-    return getAllBooks().find((book) => book.id === id) || null;
-  }
+  return getAllBooks().find((book) => String(book.id) === String(id)) || null;
+}
 
-  function getBookByBookId(bookId) {
-    return getAllBooks().find((book) => String(book.book_id) === String(bookId)) || null;
-  }
+function getBookByBookId(bookId) {
+  return getAllBooks().find((book) => String(book.book_id) === String(bookId)) || null;
+}
 
   function migrateLegacyMembers() {
     const readers = readJSON(STORAGE_KEYS.readers, null);
@@ -554,9 +619,7 @@ async function fetchBooksFromApi() {
   }
 
   function getUserLoans() {
-    const user = getUser();
-    if (!user || user.role !== "reader") return [];
-    return getOpenCirculation().filter((loan) => normalizeEmail(loan.borrowerEmail) === user.email);
+    return API_USER_LOANS;
   }
 
   function accountEmailExists(email) {
@@ -740,11 +803,17 @@ async function fetchBooksFromApi() {
         event.preventDefault();
         setUser(null);
         API_USER_RESERVATIONS = [];
+        API_USER_LOANS = [];
+        API_OPEN_LOANS = [];
         toast("You have been signed out.");
         updateHeaderUserState();
         refreshReservationButtons();
+        renderTopPicks();
+        renderCatalogPage();
         renderAccountPage();
         renderBookDetailPage();
+        renderRecommendationsPage();
+        renderAdminPage();
 
         const page = document.body.dataset.page;
         if (page === "account" || page === "admin") {
@@ -793,39 +862,31 @@ async function fetchBooksFromApi() {
     }
   }
 
-  function renewLoan(bookId) {
-    const user = getUser();
-    if (!user || user.role !== "reader") {
-      toast("Please sign in as a reader to renew books.");
-      return;
-    }
+  async function renewLoan(loanId) {
+  const user = getUser();
 
-    const circulation = getCirculation();
-    const loan = circulation.find(
-      (entry) => entry.bookId === bookId && !entry.returnedAt && normalizeEmail(entry.borrowerEmail) === user.email
-    );
+  if (!user || user.role !== "reader") {
+    toast("Please sign in as a reader to renew books.");
+    return;
+  }
 
-    if (!loan) {
-      toast("That book is not currently on your loan list.");
-      return;
-    }
+  try {
+    const result = await apiPost(`/api/renew/${encodeURIComponent(loanId)}`, {
+      user_id: Number(user.id)
+    });
 
-    if ((loan.renewals || 0) >= 2) {
-      toast("Renewal limit reached for this title.");
-      return;
-    }
+    await fetchUserLoansFromApi();
+    await fetchOpenLoansFromApi();
 
-    const due = new Date(loan.dueDate);
-    due.setDate(due.getDate() + 14);
-    loan.dueDate = due.toISOString();
-    loan.renewals = (loan.renewals || 0) + 1;
-    saveCirculation(circulation);
-    toast("Loan renewed for two more weeks.");
+    toast(result.message || "Loan renewed for two more weeks.");
     renderAccountPage();
     renderAdminPage();
     renderCatalogPage();
     renderBookDetailPage();
+  } catch (error) {
+    toast(error.message);
   }
+}
 
   function addSuggestion(title, author, reason) {
     const user = getUser();
@@ -877,67 +938,71 @@ async function fetchBooksFromApi() {
     renderBookDetailPage();
   }
 
-  function checkOutBook(bookId, readerId, dueDays) {
-    const user = getUser();
-    if (!user || user.role !== "admin") {
-      toast("Admin access is required for circulation actions.");
-      return;
-    }
+  async function checkOutBook(bookId, readerId, dueDays) {
+  const user = getUser();
 
-    if (getLoanForBook(bookId)) {
-      toast("This title is already checked out.");
-      return;
-    }
+  if (!user || user.role !== "admin") {
+    toast("Admin access is required for circulation actions.");
+    return;
+  }
 
-    const reader = findReaderById(readerId);
-    if (!reader) {
-      toast("Choose a valid reader account for checkout.");
-      return;
-    }
+  if (!bookId || !readerId) {
+    toast("Please choose both a title and a reader account.");
+    return;
+  }
 
-    const circulation = getCirculation();
-    circulation.unshift({
-      loanId: createId("loan"),
-      bookId,
-      borrowerName: reader.name,
-      borrowerEmail: reader.email,
-      memberId: reader.memberId,
-      checkedOutAt: new Date().toISOString(),
-      dueDate: offsetDate(Number(dueDays) || 14),
-      renewals: 0,
-      checkedOutBy: user.email
+  try {
+    const result = await apiPost(`/api/borrow/${encodeURIComponent(bookId)}`, {
+      user_id: Number(readerId),
+      due_days: Number(dueDays) || 14
     });
-    saveCirculation(circulation);
-    toast("Book checked out successfully.");
+
+    await fetchOpenLoansFromApi();
+    await fetchBooksFromApi();
+
+    const currentUser = getUser();
+    if (currentUser && currentUser.role === "reader") {
+      await fetchUserLoansFromApi();
+    }
+
+    toast(result.message || "Book checked out successfully.");
     renderAdminPage();
     renderCatalogPage();
     renderBookDetailPage();
     renderAccountPage();
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+  async function returnLoan(loanId) {
+  const user = getUser();
+
+  if (!user || user.role !== "admin") {
+    toast("Admin access is required for circulation actions.");
+    return;
   }
 
-  function returnLoan(loanId) {
-    const user = getUser();
-    if (!user || user.role !== "admin") {
-      toast("Admin access is required for circulation actions.");
-      return;
+  try {
+    const result = await apiPost(`/api/return-loan/${encodeURIComponent(loanId)}`, {});
+
+    await fetchOpenLoansFromApi();
+    await fetchBooksFromApi();
+
+    const currentUser = getUser();
+    if (currentUser && currentUser.role === "reader") {
+      await fetchUserLoansFromApi();
     }
 
-    const circulation = getCirculation();
-    const loan = circulation.find((entry) => entry.loanId === loanId && !entry.returnedAt);
-    if (!loan) {
-      toast("That circulation record is already closed.");
-      return;
-    }
-
-    loan.returnedAt = new Date().toISOString();
-    loan.returnedBy = user.email;
-    saveCirculation(circulation);
-    toast("Book marked as returned.");
+    toast(result.message || "Book marked as returned.");
     renderAdminPage();
     renderCatalogPage();
     renderBookDetailPage();
     renderAccountPage();
+  } catch (error) {
+    toast(error.message);
   }
+}
 
   function bookCard(book) {
     const reserved = getUserReservations().some((entry) => String(entry.bookId) === String(book.book_id));
@@ -1228,7 +1293,7 @@ async function fetchBooksFromApi() {
     const loanCards = loans.length
       ? loans
           .map((loan) => {
-            const book = getBookById(loan.bookId);
+            const book = getBookByBookId(loan.bookId);
             if (!book) return "";
             return `
               <article class="account-card">
@@ -1243,7 +1308,7 @@ async function fetchBooksFromApi() {
                 <p>Due date: ${formatDate(loan.dueDate)}</p>
                 <div class="catalog-actions compact">
                   <a class="ghost-link" href="book.html?id=${encodeURIComponent(book.id)}">View detail</a>
-                  <button class="btn-secondary js-renew" data-book-id="${escapeHtml(String(book.book_id || ""))}" ${(loan.renewals || 0) >= 2 ? "disabled" : ""}>Renew</button>
+                  <button class="btn-secondary js-renew" data-loan-id="${escapeHtml(loan.loanId)}" ${(loan.renewals || 0) >= 2 ? "disabled" : ""}>Renew</button>
                 </div>
               </article>
             `;
@@ -1335,7 +1400,7 @@ async function fetchBooksFromApi() {
     `;
 
     $all(".js-renew", accountShell).forEach((button) => {
-      button.addEventListener("click", () => renewLoan(button.dataset.bookId));
+      button.addEventListener("click", () => renewLoan(button.dataset.loanId));
     });
 
     const deleteButton = $(".js-delete-current-reader", accountShell);
@@ -1753,7 +1818,7 @@ async function fetchBooksFromApi() {
     const checkoutOptions = availableBooks.length
       ? availableBooks
           .map(
-            (book) => `<option value="${escapeHtml(book.id)}">${escapeHtml(book.title)} — ${escapeHtml(book.author)}</option>`
+            (book) => `<option value="${escapeHtml(String(book.book_id || book.id))}">${escapeHtml(book.title)} — ${escapeHtml(book.author)}</option>`
           )
           .join("")
       : `<option value="">No available titles</option>`;
@@ -1769,7 +1834,7 @@ async function fetchBooksFromApi() {
     const openLoanCards = openLoans.length
       ? openLoans
           .map((loan) => {
-            const book = getBookById(loan.bookId);
+            const book = getBookByBookId(loan.bookId);
             if (!book) return "";
             return `
               <article class="account-card">
@@ -2147,6 +2212,8 @@ async function init() {
 
   await fetchBooksFromApi();
   await fetchUserReservationsFromApi();
+  await fetchUserLoansFromApi();
+  await fetchOpenLoansFromApi();
 
   renderTopPicks();
   renderCatalogPage();

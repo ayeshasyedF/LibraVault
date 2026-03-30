@@ -1,110 +1,234 @@
+from datetime import date, timedelta
 from database.db_connection import get_connection
-from datetime import timedelta, date
 
 
-def borrow_book(user_id, book_id):
+def _member_id_for_user(user_id):
+    return f"NL-{100000 + int(user_id)}"
+
+
+def get_user_loans(user_id):
     conn = get_connection()
     cursor = conn.cursor()
 
-    cursor.execute(
-        "SELECT copy_id FROM BookCopies WHERE book_id=? AND status='available' LIMIT 1",
+    rows = cursor.execute(
+        """
+        SELECT
+            l.loan_id,
+            l.user_id,
+            bc.book_id,
+            l.copy_id,
+            l.borrow_date,
+            l.due_date,
+            l.return_date,
+            l.renewal_count
+        FROM Loans l
+        JOIN BookCopies bc ON l.copy_id = bc.copy_id
+        WHERE l.user_id = ? AND l.return_date IS NULL
+        ORDER BY l.due_date ASC, l.loan_id DESC
+        """,
+        (user_id,)
+    ).fetchall()
+
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def get_open_loans():
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    rows = cursor.execute(
+        """
+        SELECT
+            l.loan_id,
+            l.user_id,
+            u.full_name,
+            u.email,
+            bc.book_id,
+            l.copy_id,
+            l.borrow_date,
+            l.due_date,
+            l.return_date,
+            l.renewal_count
+        FROM Loans l
+        JOIN Users u ON l.user_id = u.user_id
+        JOIN BookCopies bc ON l.copy_id = bc.copy_id
+        WHERE l.return_date IS NULL
+        ORDER BY l.due_date ASC, l.loan_id DESC
+        """
+    ).fetchall()
+
+    result = []
+    for row in rows:
+        item = dict(row)
+        item["member_id"] = _member_id_for_user(item["user_id"])
+        result.append(item)
+
+    conn.close()
+    return result
+
+
+def borrow_book(user_id, book_id, due_days=14):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    user = cursor.execute(
+        "SELECT user_id FROM Users WHERE user_id = ?",
+        (user_id,)
+    ).fetchone()
+    if not user:
+        conn.close()
+        return {"error": "User not found"}
+
+    copy = cursor.execute(
+        """
+        SELECT copy_id
+        FROM BookCopies
+        WHERE book_id = ? AND status = 'available'
+        LIMIT 1
+        """,
         (book_id,)
-    )
-    copy = cursor.fetchone()
+    ).fetchone()
 
     if not copy:
         conn.close()
         return {"error": "No available copies"}
 
-    copy_id = copy["copy_id"]
     today = date.today()
-    due = today + timedelta(days=14)
+    due_date = today + timedelta(days=max(int(due_days or 14), 1))
 
     cursor.execute(
         """
         INSERT INTO Loans (user_id, copy_id, borrow_date, due_date, renewal_count)
         VALUES (?, ?, ?, ?, ?)
         """,
-        (user_id, copy_id, today, due, 0)
+        (user_id, copy["copy_id"], today.isoformat(), due_date.isoformat(), 0)
     )
 
+    loan_id = cursor.lastrowid
+
     cursor.execute(
-        "UPDATE BookCopies SET status='borrowed' WHERE copy_id=?",
-        (copy_id,)
+        "UPDATE BookCopies SET status = 'borrowed' WHERE copy_id = ?",
+        (copy["copy_id"],)
     )
 
     conn.commit()
     conn.close()
 
     return {
-        "message": f"Borrowed copy {copy_id} of book {book_id}",
-        "due_date": str(due)
+        "message": "Book checked out successfully",
+        "loan_id": loan_id,
+        "book_id": book_id,
+        "due_date": due_date.isoformat()
     }
 
 
-def return_book(user_id, book_id):
+def return_loan(loan_id):
     conn = get_connection()
     cursor = conn.cursor()
 
-    cursor.execute(
+    loan = cursor.execute(
         """
-        SELECT l.loan_id, l.copy_id
-        FROM Loans l
-        JOIN BookCopies bc ON l.copy_id = bc.copy_id
-        WHERE l.user_id=? AND bc.book_id=? AND bc.status='borrowed'
+        SELECT loan_id, copy_id
+        FROM Loans
+        WHERE loan_id = ? AND return_date IS NULL
         """,
-        (user_id, book_id)
-    )
-    loan = cursor.fetchone()
+        (loan_id,)
+    ).fetchone()
 
     if not loan:
         conn.close()
         return {"error": "No active loan found"}
 
+    today = date.today().isoformat()
+
     cursor.execute(
-        "UPDATE BookCopies SET status='available' WHERE copy_id=?",
-        (loan["copy_id"],)
+        "UPDATE Loans SET return_date = ? WHERE loan_id = ?",
+        (today, loan_id)
     )
+
     cursor.execute(
-        "DELETE FROM Loans WHERE loan_id=?",
-        (loan["loan_id"],)
+        "UPDATE BookCopies SET status = 'available' WHERE copy_id = ?",
+        (loan["copy_id"],)
     )
 
     conn.commit()
     conn.close()
 
-    return {"message": f"Returned copy {loan['copy_id']} of book {book_id}"}
+    return {"message": "Book marked as returned", "loan_id": loan_id}
+
+
+def renew_loan(loan_id, user_id):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    loan = cursor.execute(
+        """
+        SELECT loan_id, user_id, due_date, renewal_count
+        FROM Loans
+        WHERE loan_id = ? AND user_id = ? AND return_date IS NULL
+        """,
+        (loan_id, user_id)
+    ).fetchone()
+
+    if not loan:
+        conn.close()
+        return {"error": "No active loan found"}
+
+    current_renewals = int(loan["renewal_count"] or 0)
+    if current_renewals >= 2:
+        conn.close()
+        return {"error": "Renewal limit reached"}
+
+    current_due = date.fromisoformat(loan["due_date"])
+    new_due = current_due + timedelta(days=14)
+
+    cursor.execute(
+        """
+        UPDATE Loans
+        SET due_date = ?, renewal_count = ?
+        WHERE loan_id = ?
+        """,
+        (new_due.isoformat(), current_renewals + 1, loan_id)
+    )
+
+    conn.commit()
+    conn.close()
+
+    return {
+        "message": "Loan renewed for two more weeks",
+        "loan_id": loan_id,
+        "due_date": new_due.isoformat(),
+        "renewal_count": current_renewals + 1
+    }
 
 
 def reserve_book(user_id, book_id):
     conn = get_connection()
     cursor = conn.cursor()
 
-    cursor.execute(
-        "SELECT book_id FROM Books WHERE book_id=?",
+    book = cursor.execute(
+        "SELECT book_id FROM Books WHERE book_id = ?",
         (book_id,)
-    )
-    book = cursor.fetchone()
-
+    ).fetchone()
     if not book:
         conn.close()
         return {"error": "Book not found"}
 
-    cursor.execute(
+    existing = cursor.execute(
         """
         SELECT reservation_id
         FROM Reservations
-        WHERE user_id=? AND book_id=? AND status='active'
+        WHERE user_id = ? AND book_id = ? AND status = 'active'
         """,
         (user_id, book_id)
-    )
-    existing = cursor.fetchone()
+    ).fetchone()
 
     if existing:
         conn.close()
         return {"error": "You already have an active reservation for this book"}
 
-    today = date.today()
+    today = date.today().isoformat()
 
     cursor.execute(
         """
@@ -117,7 +241,7 @@ def reserve_book(user_id, book_id):
     conn.commit()
     conn.close()
 
-    return {"message": f"Book {book_id} reserved successfully"}
+    return {"message": "Book reserved successfully", "book_id": book_id}
 
 
 def get_user_reservations(user_id):
@@ -128,7 +252,7 @@ def get_user_reservations(user_id):
         """
         SELECT reservation_id, user_id, book_id, reservation_date, status
         FROM Reservations
-        WHERE user_id=? AND status='active'
+        WHERE user_id = ? AND status = 'active'
         ORDER BY reservation_date DESC, reservation_id DESC
         """,
         (user_id,)
