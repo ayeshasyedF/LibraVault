@@ -14,7 +14,8 @@
   };
 
   const ADMIN_CREATION_KEY = "nocturne-keepers-key";
-  const BASE_BOOKS = (window.LibraryData && window.LibraryData.books) || [];
+  const FALLBACK_BOOKS = (window.LibraryData && window.LibraryData.books) || [];
+  let API_BOOKS = [];
   const REC_POOLS = (window.LibraryData && window.LibraryData.recommendationPools) || {};
 
   function $(selector, scope = document) {
@@ -173,6 +174,51 @@
     writeJSON(STORAGE_KEYS.searchHistory, items);
   }
 
+  function normalizeApiBook(raw) {
+  return {
+    id: String(raw.slug || raw.book_id),
+    book_id: raw.book_id,
+    title: raw.title || "Untitled",
+    author: raw.author || "Unknown author",
+    collection: raw.collection_name || raw.collection || "General Collection",
+    genre: raw.category || raw.genre || "General",
+    format: raw.book_format || raw.format || "Book",
+    year: raw.publication_year || raw.year || "",
+    pages: Number(raw.pages) || 0,
+    rating: Number(raw.rating) || 0,
+    cover:
+      raw.cover_url ||
+      raw.cover ||
+      "https://images.pexels.com/photos/159711/books-bookstore-book-reading-159711.jpeg",
+    accent: raw.accent || "gold",
+    blurb: raw.blurb || raw.description || "No summary available yet.",
+    description: raw.description || raw.blurb || "No description available yet.",
+    publisher: raw.publisher || "",
+    copies: Array.isArray(raw.copies) ? raw.copies : []
+  };
+}
+
+async function fetchBooksFromApi() {
+  try {
+    const response = await fetch("/api/books");
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const data = await response.json();
+    API_BOOKS = Array.isArray(data) && data.length ? data.map(normalizeApiBook) : FALLBACK_BOOKS;
+
+    if (!data.length) {
+      console.warn("Database returned no books, using fallback frontend data.");
+    }
+  } catch (error) {
+    console.error("Could not load books from /api/books:", error);
+    API_BOOKS = FALLBACK_BOOKS;
+    toast("Using fallback frontend book data.");
+  }
+}
+
   function recordBookView(bookId) {
     if (!bookId) return;
     const history = getViewedBooks().filter((id) => id !== bookId);
@@ -256,21 +302,21 @@
   }
 
   function getAllBooks() {
-    return [...BASE_BOOKS, ...getAddedBooks()].map((book) => {
-      const loan = getLoanForBook(book.id);
-      return {
-        ...book,
-        available: !loan,
-        borrower: loan
-          ? {
-              name: loan.borrowerName,
-              email: loan.borrowerEmail,
-              memberId: loan.memberId,
-              dueDate: loan.dueDate
-            }
-          : null
-      };
-    });
+  return [...API_BOOKS, ...getAddedBooks()].map((book) => {
+    const loan = getLoanForBook(book.id);
+    return {
+      ...book,
+      available: !loan,
+      borrower: loan
+        ? {
+            name: loan.borrowerName,
+            email: loan.borrowerEmail,
+            memberId: loan.memberId,
+            dueDate: loan.dueDate
+          }
+        : null
+    };
+  });
   }
 
   function getBookById(id) {
@@ -671,7 +717,7 @@
   function addBook(payload) {
     const books = getAddedBooks();
     const idBase = slugify(payload.title) || "book";
-    const id = books.some((book) => book.id === idBase) || BASE_BOOKS.some((book) => book.id === idBase)
+    const id = books.some((book) => book.id === idBase) || API_BOOKS.some((book) => book.id === idBase)
       ? `${idBase}-${Date.now().toString(36)}`
       : idBase;
 
@@ -1928,21 +1974,26 @@
     });
   }
 
-  function init() {
-    ensureSeedData();
-    setYear();
-    updateHeaderUserState();
-    activateNav();
-    handleHomepageSearch();
-    renderTopPicks();
-    renderCatalogPage();
-    renderBookDetailPage();
-    renderAccountPage();
-    renderRecommendationsPage();
-    handleLoginPage();
-    renderAdminPage();
-    refreshReservationButtons();
-  }
+async function init() {
+  ensureSeedData();
+  setYear();
+  activateNav();
+  handleHomepageSearch();
+  handleLoginPage();
+  updateHeaderUserState();
 
-  document.addEventListener("DOMContentLoaded", init);
+  await fetchBooksFromApi();
+
+  renderTopPicks();
+  renderCatalogPage();
+  renderBookDetailPage();
+  renderAccountPage();
+  renderRecommendationsPage();
+  renderAdminPage();
+  refreshReservationButtons();
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  init();
+});
 })();
