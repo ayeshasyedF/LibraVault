@@ -16,6 +16,7 @@
   const ADMIN_CREATION_KEY = "nocturne-keepers-key";
   const FALLBACK_BOOKS = (window.LibraryData && window.LibraryData.books) || [];
   let API_BOOKS = [];
+  let API_USER_RESERVATIONS = [];
   const REC_POOLS = (window.LibraryData && window.LibraryData.recommendationPools) || {};
 
   function $(selector, scope = document) {
@@ -259,6 +260,35 @@ async function loginApi({ email, password, role }) {
   });
 }
 
+async function fetchUserReservationsFromApi() {
+  const user = getUser();
+
+  if (!user || user.role !== "reader") {
+    API_USER_RESERVATIONS = [];
+    return;
+  }
+
+  try {
+    const response = await fetch(`/api/users/${encodeURIComponent(user.id)}/reservations`);
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const data = await response.json();
+
+    API_USER_RESERVATIONS = Array.isArray(data)
+      ? data.map((entry) => ({
+          ...entry,
+          bookId: String(entry.book_id)
+        }))
+      : [];
+  } catch (error) {
+    console.error("Could not load reservations from API:", error);
+    API_USER_RESERVATIONS = [];
+  }
+}
+
 async function registerApi({ name, email, password, role, adminKey = "" }) {
   return apiPost("/api/register", {
     full_name: normalizeName(name),
@@ -412,6 +442,10 @@ async function fetchBooksFromApi() {
     return getAllBooks().find((book) => book.id === id) || null;
   }
 
+  function getBookByBookId(bookId) {
+    return getAllBooks().find((book) => String(book.book_id) === String(bookId)) || null;
+  }
+
   function migrateLegacyMembers() {
     const readers = readJSON(STORAGE_KEYS.readers, null);
     if (readers) return;
@@ -516,9 +550,7 @@ async function fetchBooksFromApi() {
   }
 
   function getUserReservations() {
-    const user = getUser();
-    if (!user || user.role !== "reader") return [];
-    return getReservationsAll().filter((item) => normalizeEmail(item.email) === user.email);
+    return API_USER_RESERVATIONS;
   }
 
   function getUserLoans() {
@@ -726,31 +758,33 @@ async function fetchBooksFromApi() {
     });
   }
 
-  function reserveBook(bookId) {
+  async function reserveBook(bookId) {
     const user = getUser();
+
     if (!user || user.role !== "reader") {
       toast("Please sign in as a reader to reserve books.");
       return;
     }
 
-    const items = getReservationsAll();
-    const exists = items.some((entry) => normalizeEmail(entry.email) === user.email && entry.bookId === bookId);
-    if (exists) {
-      toast("That book is already in your reservation list.");
+    if (!bookId) {
+      toast("This book is missing its database id.");
       return;
     }
 
-    items.unshift({
-      id: createId("reservation"),
-      email: user.email,
-      memberId: user.memberId,
-      bookId,
-      createdAt: new Date().toISOString()
-    });
-    saveReservations(items);
-    toast("Book reserved to your library account.");
-    refreshReservationButtons();
-    renderAccountPage();
+    try {
+      const result = await apiPost(`/api/reserve/${encodeURIComponent(bookId)}`, {
+        user_id: Number(user.id)
+      });
+
+      await fetchUserReservationsFromApi();
+
+      toast(result.message || "Book reserved to your library account.");
+      refreshReservationButtons();
+      renderAccountPage();
+      renderBookDetailPage();
+    } catch (error) {
+      toast(error.message);
+    }
   }
 
   function renewLoan(bookId) {
@@ -900,7 +934,7 @@ async function fetchBooksFromApi() {
   }
 
   function bookCard(book) {
-    const reserved = getUserReservations().some((entry) => entry.bookId === book.id);
+    const reserved = getUserReservations().some((entry) => String(entry.bookId) === String(book.book_id));
     const availability = book.available ? "Available now" : "Currently on loan";
     const buttonText = reserved ? "Reserved" : "Reserve";
     const buttonClass = reserved ? "btn-secondary is-static" : "btn-secondary js-reserve";
@@ -927,7 +961,7 @@ async function fetchBooksFromApi() {
           <div class="catalog-status ${book.available ? "available" : "unavailable"}">${availability}</div>
           <div class="catalog-actions">
             <a class="ghost-link" href="book.html?id=${encodeURIComponent(book.id)}">View details</a>
-            <button class="${buttonClass}" data-book-id="${escapeHtml(book.id)}" ${reserved ? "disabled" : ""}>
+            <button class="${buttonClass}" data-book-id="${escapeHtml(String(book.book_id || ""))}" ${reserved ? "disabled" : ""}>
               ${buttonText}
             </button>
           </div>
@@ -937,7 +971,7 @@ async function fetchBooksFromApi() {
   }
 
   function recommendationCard(book, note) {
-    const reserved = getUserReservations().some((entry) => entry.bookId === book.id);
+    const reserved = getUserReservations().some((entry) => String(entry.bookId) === String(book.book_id));
     const availability = book.available ? "Available now" : "Currently on loan";
     const buttonText = reserved ? "Reserved" : "Reserve";
     const buttonClass = reserved ? "btn-secondary is-static" : "btn-secondary js-reserve";
@@ -965,7 +999,7 @@ async function fetchBooksFromApi() {
           <div class="catalog-status ${book.available ? "available" : "unavailable"}">${availability}</div>
           <div class="catalog-actions">
             <a class="ghost-link" href="book.html?id=${encodeURIComponent(book.id)}">View details</a>
-            <button class="${buttonClass}" data-book-id="${escapeHtml(book.id)}" ${reserved ? "disabled" : ""}>
+            <button class="${buttonClass}" data-book-id="${escapeHtml(String(book.book_id || ""))}" ${reserved ? "disabled" : ""}>
               ${buttonText}
             </button>
           </div>
@@ -981,9 +1015,9 @@ async function fetchBooksFromApi() {
   }
 
   function refreshReservationButtons() {
-    const ids = getUserReservations().map((entry) => entry.bookId);
+    const ids = getUserReservations().map((entry) => String(entry.bookId));
     $all(".js-reserve").forEach((button) => {
-      const reserved = ids.includes(button.dataset.bookId);
+      const reserved = ids.includes(String(button.dataset.bookId));
       button.disabled = reserved;
       button.textContent = reserved ? "Reserved" : "Reserve";
       if (reserved) {
@@ -1100,7 +1134,7 @@ async function fetchBooksFromApi() {
 
     recordBookView(book.id);
 
-    const reserved = getUserReservations().some((entry) => entry.bookId === book.id);
+    const reserved = getUserReservations().some((entry) => String(entry.bookId) === String(book.book_id));
     const user = getUser();
 
     shell.innerHTML = `
@@ -1123,7 +1157,7 @@ async function fetchBooksFromApi() {
             ${book.available ? "Available now" : "On loan, but you can still reserve it"}
           </div>
           <div class="book-actions">
-            <button class="btn js-reserve" data-book-id="${escapeHtml(book.id)}" ${reserved ? "disabled" : ""}>
+            <button class="btn js-reserve" data-book-id="${escapeHtml(String(book.book_id || ""))}" ${reserved ? "disabled" : ""}>
               ${reserved ? "Reserved" : "Reserve this title"}
             </button>
             <a class="btn-secondary" href="catalog.html">Back to catalog</a>
@@ -1182,7 +1216,9 @@ async function fetchBooksFromApi() {
     }
 
     const loans = getUserLoans();
-    const reservations = getUserReservations().map((entry) => getBookById(entry.bookId)).filter(Boolean);
+    const reservations = getUserReservations()
+      .map((entry) => getBookByBookId(entry.bookId))
+      .filter(Boolean);
     const loanCards = loans.length
       ? loans
           .map((loan) => {
@@ -1201,7 +1237,7 @@ async function fetchBooksFromApi() {
                 <p>Due date: ${formatDate(loan.dueDate)}</p>
                 <div class="catalog-actions compact">
                   <a class="ghost-link" href="book.html?id=${encodeURIComponent(book.id)}">View detail</a>
-                  <button class="btn-secondary js-renew" data-book-id="${escapeHtml(book.id)}" ${(loan.renewals || 0) >= 2 ? "disabled" : ""}>Renew</button>
+                  <button class="btn-secondary js-renew" data-book-id="${escapeHtml(String(book.book_id || ""))}" ${(loan.renewals || 0) >= 2 ? "disabled" : ""}>Renew</button>
                 </div>
               </article>
             `;
@@ -2104,6 +2140,7 @@ async function init() {
   updateHeaderUserState();
 
   await fetchBooksFromApi();
+  await fetchUserReservationsFromApi();
 
   renderTopPicks();
   renderCatalogPage();
