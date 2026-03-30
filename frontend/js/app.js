@@ -173,7 +173,110 @@
   function saveSearchHistory(items) {
     writeJSON(STORAGE_KEYS.searchHistory, items);
   }
+  
+  function buildSessionFromApiUser(user) {
+  if (!user) return null;
 
+  return {
+    id: String(user.user_id),
+    name: user.full_name,
+    email: normalizeEmail(user.email),
+    memberId: user.role === "admin" ? user.staff_id : user.member_id,
+    role: user.role
+  };
+}
+
+function syncUserToLocalDirectory(sessionUser) {
+  if (!sessionUser) return;
+
+  if (sessionUser.role === "admin") {
+    const admins = getAdmins();
+    const existing = admins.find((entry) => normalizeEmail(entry.email) === sessionUser.email);
+
+    const adminRecord = {
+      id: String(sessionUser.id),
+      name: sessionUser.name,
+      email: sessionUser.email,
+      password: "",
+      staffId: sessionUser.memberId,
+      createdAt: new Date().toISOString()
+    };
+
+    if (existing) {
+      Object.assign(existing, adminRecord);
+    } else {
+      admins.unshift(adminRecord);
+    }
+
+    saveAdmins(admins);
+    return;
+  }
+
+  const readers = getReaders();
+  const existing = readers.find((entry) => normalizeEmail(entry.email) === sessionUser.email);
+
+  const readerRecord = {
+    id: String(sessionUser.id),
+    name: sessionUser.name,
+    email: sessionUser.email,
+    password: "",
+    memberId: sessionUser.memberId,
+    createdAt: new Date().toISOString()
+  };
+
+  if (existing) {
+    Object.assign(existing, readerRecord);
+  } else {
+    readers.unshift(readerRecord);
+  }
+
+  saveReaders(readers);
+}
+
+async function apiPost(url, payload) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(data.error || data.message || `Request failed with status ${response.status}`);
+  }
+
+  return data;
+}
+
+async function loginApi({ email, password, role }) {
+  return apiPost("/api/login", {
+    email: normalizeEmail(email),
+    password,
+    role
+  });
+}
+
+async function registerApi({ name, email, password, role, adminKey = "" }) {
+  return apiPost("/api/register", {
+    full_name: normalizeName(name),
+    email: normalizeEmail(email),
+    password,
+    role,
+    admin_key: adminKey
+  });
+}
+
+async function resetPasswordApi({ email, password, role }) {
+  return apiPost("/api/reset-password", {
+    email: normalizeEmail(email),
+    password,
+    role
+  });
+}
+  
   function normalizeApiBook(raw) {
   return {
     id: String(raw.slug || raw.book_id),
@@ -275,23 +378,9 @@ async function fetchBooksFromApi() {
   function getUser() {
     const raw = readJSON(STORAGE_KEYS.user, null);
     if (!raw || !raw.role || !raw.email) return null;
-
-    const account = raw.role === "admin" ? findAdminByEmail(raw.email) : findReaderByEmail(raw.email);
-    if (!account) {
-      localStorage.removeItem(STORAGE_KEYS.user);
-      return null;
-    }
-
-    const normalized = buildSessionFromAccount(account, raw.role);
-    if (
-      raw.id !== normalized.id ||
-      raw.name !== normalized.name ||
-      raw.memberId !== normalized.memberId
-    ) {
-      setUser(normalized);
-    }
-    return normalized;
+    return raw;
   }
+
 
   function getOpenCirculation() {
     return getCirculation().filter((entry) => !entry.returnedAt);
@@ -1444,126 +1533,158 @@ async function fetchBooksFromApi() {
   }
 
   function handleLoginPage() {
-    if (!$('[data-auth-panel="signin"]')) return;
+  if (!$('[data-auth-panel="signin"]')) return;
 
-    $all(".auth-tab").forEach((button) => {
-      button.addEventListener("click", () => showAuthView(button.dataset.authView));
-    });
+  $all(".auth-tab").forEach((button) => {
+    button.addEventListener("click", () => showAuthView(button.dataset.authView));
+  });
 
-    const signInForm = $("#signInForm");
-    if (signInForm) {
-      signInForm.addEventListener("submit", (event) => {
-        event.preventDefault();
-        const role = ($('input[name="loginRole"]:checked') || {}).value || "reader";
-        const email = $("#loginEmail").value;
-        const password = $("#loginPassword").value;
-        const result = authenticate(role, email, password);
+  const signInForm = $("#signInForm");
+  if (signInForm) {
+    signInForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
 
-        if (!result.ok) {
-          toast(result.message);
-          return;
-        }
+      const role = ($('input[name="loginRole"]:checked') || {}).value || "reader";
+      const email = $("#loginEmail").value;
+      const password = $("#loginPassword").value;
 
-        setUser(buildSessionFromAccount(result.account, role));
+      try {
+        const result = await loginApi({ email, password, role });
+        const sessionUser = buildSessionFromApiUser(result.user);
+
+        syncUserToLocalDirectory(sessionUser);
+        setUser(sessionUser);
+
         toast(role === "admin" ? "Admin access granted." : "Welcome back to Nocturne Library.");
         updateHeaderUserState();
+
         setTimeout(() => {
           window.location.href = role === "admin" ? "admin.html" : "account.html";
         }, 250);
-      });
-    }
+      } catch (error) {
+        toast(error.message);
+      }
+    });
+  }
 
-    const readerSignupForm = $("#readerSignupForm");
-    if (readerSignupForm) {
-      readerSignupForm.addEventListener("submit", (event) => {
-        event.preventDefault();
-        const name = $("#readerName").value;
-        const email = $("#readerEmail").value;
-        const password = $("#readerPassword").value;
-        const confirm = $("#readerPasswordConfirm").value;
+  const readerSignupForm = $("#readerSignupForm");
+  if (readerSignupForm) {
+    readerSignupForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
 
-        if (password !== confirm) {
-          toast("Reader passwords do not match.");
-          return;
-        }
+      const name = $("#readerName").value;
+      const email = $("#readerEmail").value;
+      const password = $("#readerPassword").value;
+      const confirm = $("#readerPasswordConfirm").value;
 
-        const result = createReaderAccount(name, email, password);
-        if (!result.ok) {
-          toast(result.message);
-          return;
-        }
+      if (password !== confirm) {
+        toast("Reader passwords do not match.");
+        return;
+      }
 
-        setUser(buildSessionFromAccount(result.account, "reader"));
+      try {
+        const result = await registerApi({
+          name,
+          email,
+          password,
+          role: "reader"
+        });
+
+        const sessionUser = buildSessionFromApiUser(result.user);
+
+        syncUserToLocalDirectory(sessionUser);
+        setUser(sessionUser);
+
         toast("Reader account created.");
         updateHeaderUserState();
+
         setTimeout(() => {
           window.location.href = "account.html";
         }, 250);
-      });
-    }
+      } catch (error) {
+        toast(error.message);
+      }
+    });
+  }
 
-    const adminSignupForm = $("#adminSignupForm");
-    if (adminSignupForm) {
-      adminSignupForm.addEventListener("submit", (event) => {
-        event.preventDefault();
-        const name = $("#adminName").value;
-        const email = $("#adminEmail").value;
-        const password = $("#adminPassword").value;
-        const confirm = $("#adminPasswordConfirm").value;
-        const key = $("#adminCreationKey").value;
+  const adminSignupForm = $("#adminSignupForm");
+  if (adminSignupForm) {
+    adminSignupForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
 
-        if (password !== confirm) {
-          toast("Admin passwords do not match.");
-          return;
-        }
+      const name = $("#adminName").value;
+      const email = $("#adminEmail").value;
+      const password = $("#adminPassword").value;
+      const confirm = $("#adminPasswordConfirm").value;
+      const key = $("#adminCreationKey").value;
 
-        const result = createAdminAccount(name, email, password, key);
-        if (!result.ok) {
-          toast(result.message);
-          return;
-        }
+      if (password !== confirm) {
+        toast("Admin passwords do not match.");
+        return;
+      }
 
-        setUser(buildSessionFromAccount(result.account, "admin"));
+      try {
+        const result = await registerApi({
+          name,
+          email,
+          password,
+          role: "admin",
+          adminKey: key
+        });
+
+        const sessionUser = buildSessionFromApiUser(result.user);
+
+        syncUserToLocalDirectory(sessionUser);
+        setUser(sessionUser);
+
         toast("Admin account created.");
         updateHeaderUserState();
+
         setTimeout(() => {
           window.location.href = "admin.html";
         }, 250);
-      });
-    }
+      } catch (error) {
+        toast(error.message);
+      }
+    });
+  }
 
-    const forgotPasswordForm = $("#forgotPasswordForm");
-    if (forgotPasswordForm) {
-      forgotPasswordForm.addEventListener("submit", (event) => {
-        event.preventDefault();
-        const role = ($('input[name="resetRole"]:checked') || {}).value || "reader";
-        const email = $("#resetEmail").value;
-        const password = $("#resetPassword").value;
-        const confirm = $("#resetPasswordConfirm").value;
+  const forgotPasswordForm = $("#forgotPasswordForm");
+  if (forgotPasswordForm) {
+    forgotPasswordForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
 
-        if (password !== confirm) {
-          toast("The new passwords do not match.");
-          return;
-        }
+      const role = ($('input[name="resetRole"]:checked') || {}).value || "reader";
+      const email = $("#resetEmail").value;
+      const password = $("#resetPassword").value;
+      const confirm = $("#resetPasswordConfirm").value;
 
-        const result = resetPassword(role, email, password);
-        if (!result.ok) {
-          toast(result.message);
-          return;
-        }
+      if (password !== confirm) {
+        toast("The new passwords do not match.");
+        return;
+      }
+
+      try {
+        await resetPasswordApi({ email, password, role });
 
         forgotPasswordForm.reset();
         toast("Password updated. You can sign in now.");
         showAuthView("signin");
+
         const roleField = $all('input[name="loginRole"]');
         roleField.forEach((input) => {
           input.checked = input.value === role;
         });
+
         $("#loginEmail").value = normalizeEmail(email);
         $("#loginPassword").value = "";
-      });
-    }
+      } catch (error) {
+        toast(error.message);
+      }
+    });
   }
+}
+
 
   function renderAdminPage() {
     const shell = $("#adminShell");
