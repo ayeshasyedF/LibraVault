@@ -1,62 +1,191 @@
-from flask import Flask, jsonify, request
-import sqlite3
+import json
 import os
+import re
+import sqlite3
+from pathlib import Path
 
-app = Flask(__name__)
+BASE_DIR = Path(__file__).resolve().parent.parent
+DB_PATH = BASE_DIR / "library.db"
+DATA_JS_PATH = BASE_DIR / "frontend" / "js" / "data.js"
 
-# DB path
-DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "library.db")
 
-def get_db_connection():
+def get_connection():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
-@app.route("/books", methods=["GET"])
-def list_books():
-    """List all books with their availability"""
-    conn = get_db_connection()
-    books = conn.execute("""
-        SELECT b.book_id, b.title,
-               COUNT(bc.copy_id) as total_copies,
-               SUM(CASE WHEN bc.status='available' THEN 1 ELSE 0 END) as available_copies
-        FROM Books b
-        LEFT JOIN BookCopies bc ON b.book_id = bc.book_id
-        GROUP BY b.book_id
-    """).fetchall()
-    conn.close()
 
-    return jsonify([dict(book) for book in books])
+def extract_books_from_data_js(data_js_path: Path):
+    """
+    Reads frontend/js/data.js and extracts the books array from:
+    window.LibraryData = { books: [ ... ], recommendationPools: ... }
+    """
+    raw = data_js_path.read_text(encoding="utf-8")
 
-@app.route("/borrow/<int:book_id>", methods=["POST"])
-def borrow_book(book_id):
-    """Borrow a book if available"""
-    conn = get_db_connection()
-    copy = conn.execute("""
-        SELECT copy_id FROM BookCopies
-        WHERE book_id = ? AND status = 'available'
-        LIMIT 1
-    """, (book_id,)).fetchone()
+    match = re.search(r"books\s*:\s*\[(.*?)\]\s*,\s*recommendationPools\s*:", raw, re.DOTALL)
+    if not match:
+        raise ValueError("Could not find books array inside frontend/js/data.js")
 
-    if copy is None:
+    books_block = match.group(1)
+
+    # Convert JS object keys to JSON keys:
+    # { id: "x", title: "y" } -> { "id": "x", "title": "y" }
+    books_json_like = "[" + books_block + "]"
+    books_json_like = re.sub(r'([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)\s*:', r'\1"\2":', books_json_like)
+
+    try:
+        books = json.loads(books_json_like)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Failed to parse books from data.js: {e}")
+
+    if not isinstance(books, list):
+        raise ValueError("Parsed books data is not a list.")
+
+    return books
+
+
+def insert_book(conn, book):
+    """
+    Insert one book if its slug does not already exist.
+    Returns the book_id of the existing/new row.
+    """
+    slug = book.get("id")
+    title = book.get("title")
+    author = book.get("author")
+    category = book.get("genre")
+    collection_name = book.get("collection")
+    book_format = book.get("format")
+    publication_year = book.get("year")
+    pages = book.get("pages")
+    rating = book.get("rating")
+    cover_url = book.get("cover")
+    blurb = book.get("blurb")
+    description = book.get("description")
+    accent = book.get("accent")
+
+    if not slug or not title:
+        raise ValueError(f"Book is missing required fields: slug={slug!r}, title={title!r}")
+
+    existing = conn.execute(
+        "SELECT book_id FROM Books WHERE slug = ?",
+        (slug,)
+    ).fetchone()
+
+    if existing:
+        return existing["book_id"], False
+
+    cursor = conn.execute(
+        """
+        INSERT INTO Books (
+            slug,
+            title,
+            isbn,
+            author,
+            category,
+            collection_name,
+            book_format,
+            publication_year,
+            pages,
+            rating,
+            cover_url,
+            blurb,
+            description,
+            accent,
+            publisher
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            slug,
+            title,
+            None,  # isbn
+            author,
+            category,
+            collection_name,
+            book_format,
+            publication_year,
+            pages,
+            rating,
+            cover_url,
+            blurb,
+            description,
+            accent,
+            None,  # publisher
+        )
+    )
+
+    return cursor.lastrowid, True
+
+
+def ensure_at_least_one_copy(conn, book_id, available=True):
+    """
+    Create one copy only if the book has no copies yet.
+    """
+    existing_copy = conn.execute(
+        "SELECT copy_id FROM BookCopies WHERE book_id = ? LIMIT 1",
+        (book_id,)
+    ).fetchone()
+
+    if existing_copy:
+        return False
+
+    status = "available" if available else "borrowed"
+    location = "Main Shelf"
+
+    conn.execute(
+        """
+        INSERT INTO BookCopies (book_id, status, location)
+        VALUES (?, ?, ?)
+        """,
+        (book_id, status, location)
+    )
+    return True
+
+
+def main():
+    if not DB_PATH.exists():
+        raise FileNotFoundError(f"Database not found: {DB_PATH}")
+
+    if not DATA_JS_PATH.exists():
+        raise FileNotFoundError(f"Frontend data file not found: {DATA_JS_PATH}")
+
+    books = extract_books_from_data_js(DATA_JS_PATH)
+
+    inserted_books = 0
+    skipped_books = 0
+    inserted_copies = 0
+    skipped_copies = 0
+
+    conn = get_connection()
+    try:
+        for book in books:
+            book_id, inserted = insert_book(conn, book)
+            if inserted:
+                inserted_books += 1
+            else:
+                skipped_books += 1
+
+            copy_inserted = ensure_at_least_one_copy(
+                conn,
+                book_id,
+                available=bool(book.get("available", True))
+            )
+            if copy_inserted:
+                inserted_copies += 1
+            else:
+                skipped_copies += 1
+
+        conn.commit()
+
+    finally:
         conn.close()
-        return jsonify({"error": "No copies available"}), 400
 
-    # Mark as borrowed
-    conn.execute("UPDATE BookCopies SET status = 'borrowed' WHERE copy_id = ?", (copy["copy_id"],))
-    conn.commit()
-    conn.close()
+    print("Seeding complete.")
+    print(f"Books inserted: {inserted_books}")
+    print(f"Books skipped (already existed): {skipped_books}")
+    print(f"Copies inserted: {inserted_copies}")
+    print(f"Copies skipped (already existed): {skipped_copies}")
 
-    return jsonify({"message": f"Book {book_id} borrowed successfully", "copy_id": copy["copy_id"]})
-
-@app.route("/return/<int:copy_id>", methods=["POST"])
-def return_book(copy_id):
-    """Return a borrowed book"""
-    conn = get_db_connection()
-    conn.execute("UPDATE BookCopies SET status = 'available' WHERE copy_id = ?", (copy_id,))
-    conn.commit()
-    conn.close()
-    return jsonify({"message": f"Copy {copy_id} returned successfully"})
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    main()
