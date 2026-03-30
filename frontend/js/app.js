@@ -1,20 +1,12 @@
 (function () {
   const STORAGE_KEYS = {
     user: "nocturne_user",
-    readers: "nocturne_reader_accounts",
-    admins: "nocturne_admin_accounts",
-    reservations: "nocturne_reservations",
-    circulation: "nocturne_circulation",
     suggestions: "nocturne_suggestions",
-    addedBooks: "nocturne_added_books",
     homepageSearch: "nocturne_homepage_search",
     viewedBooks: "nocturne_viewed_books",
     searchHistory: "nocturne_search_history",
-    legacyMembers: "nocturne_members"
   };
 
-  const ADMIN_CREATION_KEY = "nocturne-keepers-key";
-  const FALLBACK_BOOKS = (window.LibraryData && window.LibraryData.books) || [];
   let API_BOOKS = [];
   let API_USER_RESERVATIONS = [];
   let API_USER_LOANS = [];
@@ -48,15 +40,6 @@
     return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   }
 
-  function slugify(value) {
-    return String(value || "")
-      .toLowerCase()
-      .trim()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 60);
-  }
-
   function normalizeEmail(value) {
     return String(value || "").trim().toLowerCase();
   }
@@ -78,12 +61,6 @@
       day: "numeric",
       year: "numeric"
     });
-  }
-
-  function offsetDate(days) {
-    const date = new Date();
-    date.setDate(date.getDate() + days);
-    return date.toISOString();
   }
 
   function escapeHtml(value) {
@@ -115,52 +92,12 @@
     });
   }
 
-  function getReaders() {
-    return readJSON(STORAGE_KEYS.readers, []);
-  }
-
-  function saveReaders(items) {
-    writeJSON(STORAGE_KEYS.readers, items);
-  }
-
-  function getAdmins() {
-    return readJSON(STORAGE_KEYS.admins, []);
-  }
-
-  function saveAdmins(items) {
-    writeJSON(STORAGE_KEYS.admins, items);
-  }
-
-  function getReservationsAll() {
-    return readJSON(STORAGE_KEYS.reservations, []);
-  }
-
-  function saveReservations(items) {
-    writeJSON(STORAGE_KEYS.reservations, items);
-  }
-
-  function getCirculation() {
-    return readJSON(STORAGE_KEYS.circulation, []);
-  }
-
-  function saveCirculation(items) {
-    writeJSON(STORAGE_KEYS.circulation, items);
-  }
-
   function getSuggestions() {
     return readJSON(STORAGE_KEYS.suggestions, []);
   }
 
   function saveSuggestions(items) {
     writeJSON(STORAGE_KEYS.suggestions, items);
-  }
-
-  function getAddedBooks() {
-    return readJSON(STORAGE_KEYS.addedBooks, []);
-  }
-
-  function saveAddedBooks(items) {
-    writeJSON(STORAGE_KEYS.addedBooks, items);
   }
 
   function getViewedBooks() {
@@ -189,53 +126,6 @@
     memberId: user.role === "admin" ? user.staff_id : user.member_id,
     role: user.role
   };
-}
-
-function syncUserToLocalDirectory(sessionUser) {
-  if (!sessionUser) return;
-
-  if (sessionUser.role === "admin") {
-    const admins = getAdmins();
-    const existing = admins.find((entry) => normalizeEmail(entry.email) === sessionUser.email);
-
-    const adminRecord = {
-      id: String(sessionUser.id),
-      name: sessionUser.name,
-      email: sessionUser.email,
-      password: "",
-      staffId: sessionUser.memberId,
-      createdAt: new Date().toISOString()
-    };
-
-    if (existing) {
-      Object.assign(existing, adminRecord);
-    } else {
-      admins.unshift(adminRecord);
-    }
-
-    saveAdmins(admins);
-    return;
-  }
-
-  const readers = getReaders();
-  const existing = readers.find((entry) => normalizeEmail(entry.email) === sessionUser.email);
-
-  const readerRecord = {
-    id: String(sessionUser.id),
-    name: sessionUser.name,
-    email: sessionUser.email,
-    password: "",
-    memberId: sessionUser.memberId,
-    createdAt: new Date().toISOString()
-  };
-
-  if (existing) {
-    Object.assign(existing, readerRecord);
-  } else {
-    readers.unshift(readerRecord);
-  }
-
-  saveReaders(readers);
 }
 
 async function apiPost(url, payload) {
@@ -468,15 +358,11 @@ async function fetchBooksFromApi() {
     }
 
     const data = await response.json();
-    API_BOOKS = Array.isArray(data) && data.length ? data.map(normalizeApiBook) : FALLBACK_BOOKS;
-
-    if (!data.length) {
-      console.warn("Database returned no books, using fallback frontend data.");
-    }
+    API_BOOKS = Array.isArray(data) ? data.map(normalizeApiBook) : [];
   } catch (error) {
     console.error("Could not load books from /api/books:", error);
-    API_BOOKS = FALLBACK_BOOKS;
-    toast("Using fallback frontend book data.");
+    API_BOOKS = [];
+    toast("Could not load catalog from the server.");
   }
 }
 
@@ -504,34 +390,14 @@ async function fetchBooksFromApi() {
     writeJSON(STORAGE_KEYS.user, user);
   }
 
-  function findReaderByEmail(email) {
-    const cleanEmail = normalizeEmail(email);
-    return getReaders().find((reader) => normalizeEmail(reader.email) === cleanEmail) || null;
-  }
-
-  function findAdminByEmail(email) {
-    const cleanEmail = normalizeEmail(email);
-    return getAdmins().find((admin) => normalizeEmail(admin.email) === cleanEmail) || null;
-  }
-
   function findReaderById(id) {
-    return getReaders().find((reader) => reader.id === id) || null;
-  }
+  return API_READERS.find((reader) => String(reader.id) === String(id)) || null;
+}
 
-  function findAdminById(id) {
-    return getAdmins().find((admin) => admin.id === id) || null;
-  }
+function findAdminById(id) {
+  return API_ADMINS.find((admin) => String(admin.id) === String(id)) || null;
+}
 
-  function buildSessionFromAccount(account, role) {
-    if (!account) return null;
-    return {
-      id: account.id,
-      name: account.name,
-      email: account.email,
-      memberId: role === "reader" ? account.memberId : account.staffId,
-      role
-    };
-  }
 
   function getUser() {
     const raw = readJSON(STORAGE_KEYS.user, null);
@@ -576,108 +442,6 @@ function getBookByBookId(bookId) {
   return getAllBooks().find((book) => String(book.book_id) === String(bookId)) || null;
 }
 
-  function migrateLegacyMembers() {
-    const readers = readJSON(STORAGE_KEYS.readers, null);
-    if (readers) return;
-
-    const legacyMembers = readJSON(STORAGE_KEYS.legacyMembers, null);
-    if (!legacyMembers || !Array.isArray(legacyMembers) || !legacyMembers.length) return;
-
-    saveReaders(
-      legacyMembers.map((member, index) => ({
-        id: member.id || createId("reader"),
-        name: member.name || `Reader ${index + 1}`,
-        email: normalizeEmail(member.email || `reader${index + 1}@nocturne.demo`),
-        password: "reader123",
-        memberId: member.memberId || `NL-${Math.floor(100000 + Math.random() * 900000)}`,
-        createdAt: new Date().toISOString()
-      }))
-    );
-  }
-
-  function ensureSeedData() {
-    migrateLegacyMembers();
-
-    if (!readJSON(STORAGE_KEYS.readers, null)) {
-      saveReaders([
-        {
-          id: createId("reader"),
-          name: "Evelyn Hart",
-          email: "evelyn@nocturne.demo",
-          password: "moonlit-reader",
-          memberId: "NL-431284",
-          createdAt: new Date().toISOString()
-        },
-        {
-          id: createId("reader"),
-          name: "Julian March",
-          email: "julian@nocturne.demo",
-          password: "reading-room",
-          memberId: "NL-572118",
-          createdAt: new Date().toISOString()
-        }
-      ]);
-    }
-
-    if (!readJSON(STORAGE_KEYS.admins, null)) {
-      saveAdmins([
-        {
-          id: createId("admin"),
-          name: "Aurelia Vale",
-          email: "admin@nocturne.demo",
-          password: "library-admin",
-          staffId: "ADM-001",
-          createdAt: new Date().toISOString()
-        }
-      ]);
-    }
-
-    if (!readJSON(STORAGE_KEYS.circulation, null)) {
-      saveCirculation([
-        {
-          loanId: createId("loan"),
-          bookId: "rebecca",
-          borrowerName: "Evelyn Hart",
-          borrowerEmail: "evelyn@nocturne.demo",
-          memberId: "NL-431284",
-          checkedOutAt: offsetDate(-5),
-          dueDate: offsetDate(9),
-          renewals: 0,
-          checkedOutBy: "admin@nocturne.demo"
-        }
-      ]);
-    }
-
-    if (!readJSON(STORAGE_KEYS.suggestions, null)) {
-      saveSuggestions([
-        {
-          id: createId("suggestion"),
-          title: "The Goldfinch",
-          author: "Donna Tartt",
-          reason: "It matches the literary and atmospheric tone of the current featured collection.",
-          createdAt: new Date().toISOString(),
-          submittedBy: "Guest Reader",
-          submittedByEmail: ""
-        }
-      ]);
-    }
-
-    if (!readJSON(STORAGE_KEYS.reservations, null)) {
-      saveReservations([]);
-    }
-
-    if (!readJSON(STORAGE_KEYS.addedBooks, null)) {
-      saveAddedBooks([]);
-    }
-
-    if (!readJSON(STORAGE_KEYS.viewedBooks, null)) {
-      saveViewedBooks([]);
-    }
-
-    if (!readJSON(STORAGE_KEYS.searchHistory, null)) {
-      saveSearchHistory([]);
-    }
-  }
 
   function getUserReservations() {
     return API_USER_RESERVATIONS;
@@ -687,118 +451,6 @@ function getBookByBookId(bookId) {
     return API_USER_LOANS;
   }
 
-  function accountEmailExists(email) {
-    return !!findReaderByEmail(email) || !!findAdminByEmail(email);
-  }
-
-  function createReaderAccount(name, email, password) {
-    const cleanName = normalizeName(name);
-    const cleanEmail = normalizeEmail(email);
-    const cleanPassword = String(password || "").trim();
-
-    if (!cleanName || !cleanEmail || !cleanPassword) {
-      return { ok: false, message: "Please complete all reader account fields." };
-    }
-
-    if (cleanPassword.length < 6) {
-      return { ok: false, message: "Reader passwords should be at least 6 characters." };
-    }
-
-    if (accountEmailExists(cleanEmail)) {
-      return { ok: false, message: "An account already exists with that email." };
-    }
-
-    const readers = getReaders();
-    const reader = {
-      id: createId("reader"),
-      name: cleanName,
-      email: cleanEmail,
-      password: cleanPassword,
-      memberId: "NL-" + Math.floor(100000 + Math.random() * 900000),
-      createdAt: new Date().toISOString()
-    };
-
-    readers.unshift(reader);
-    saveReaders(readers);
-    return { ok: true, account: reader };
-  }
-
-  function createAdminAccount(name, email, password, key) {
-    const cleanName = normalizeName(name);
-    const cleanEmail = normalizeEmail(email);
-    const cleanPassword = String(password || "").trim();
-
-    if (!cleanName || !cleanEmail || !cleanPassword || !String(key || "").trim()) {
-      return { ok: false, message: "Please complete all admin account fields." };
-    }
-
-    if (String(key).trim() !== ADMIN_CREATION_KEY) {
-      return { ok: false, message: `Use the admin creation key: ${ADMIN_CREATION_KEY}` };
-    }
-
-    if (cleanPassword.length < 6) {
-      return { ok: false, message: "Admin passwords should be at least 6 characters." };
-    }
-
-    if (accountEmailExists(cleanEmail)) {
-      return { ok: false, message: "An account already exists with that email." };
-    }
-
-    const admins = getAdmins();
-    const admin = {
-      id: createId("admin"),
-      name: cleanName,
-      email: cleanEmail,
-      password: cleanPassword,
-      staffId: "ADM-" + String(admins.length + 1).padStart(3, "0"),
-      createdAt: new Date().toISOString()
-    };
-
-    admins.unshift(admin);
-    saveAdmins(admins);
-    return { ok: true, account: admin };
-  }
-
-  function authenticate(role, email, password) {
-    const cleanEmail = normalizeEmail(email);
-    const cleanPassword = String(password || "");
-    const account = role === "admin" ? findAdminByEmail(cleanEmail) : findReaderByEmail(cleanEmail);
-
-    if (!account) {
-      return { ok: false, message: `No ${role} account was found with that email.` };
-    }
-
-    if (account.password !== cleanPassword) {
-      return { ok: false, message: "That password does not match our saved frontend record." };
-    }
-
-    return { ok: true, account };
-  }
-
-  function resetPassword(role, email, password) {
-    const cleanEmail = normalizeEmail(email);
-    const cleanPassword = String(password || "").trim();
-
-    if (cleanPassword.length < 6) {
-      return { ok: false, message: "New passwords should be at least 6 characters." };
-    }
-
-    const items = role === "admin" ? getAdmins() : getReaders();
-    const account = items.find((entry) => normalizeEmail(entry.email) === cleanEmail);
-
-    if (!account) {
-      return { ok: false, message: `No ${role} account was found with that email.` };
-    }
-
-    account.password = cleanPassword;
-    if (role === "admin") {
-      saveAdmins(items);
-    } else {
-      saveReaders(items);
-    }
-
-    return { ok: true, account };
-  }
 
   async function deleteReaderAccount(readerId) {
   try {
@@ -1460,7 +1112,7 @@ function getBookByBookId(bookId) {
           <article class="account-card compact-card danger-card">
             <span class="label">Danger zone</span>
             <h3>Delete this account</h3>
-            <p>Deleting your account removes your reader profile, clears your reservations, and closes any active loans in this frontend demo.</p>
+            <p>Deleting your account removes your reader profile and clears the related reservations and loan records returned by the backend.</p>
             <button class="btn-secondary danger-button js-delete-current-reader" type="button">Delete reader account</button>
           </article>
         </div>
@@ -1474,7 +1126,7 @@ function getBookByBookId(bookId) {
     const deleteButton = $(".js-delete-current-reader", accountShell);
     if (deleteButton) {
         deleteButton.addEventListener("click", async () => {
-        const confirmed = window.confirm("Delete this reader account? This demo will also clear your reservations and active loans.");
+        const confirmed = window.confirm("Delete this reader account? This will also remove your related reservations and active loan records.");
         if (!confirmed) return;
         const result = await deleteReaderAccount(user.id);
         if (!result.ok) {
@@ -1503,19 +1155,19 @@ function getBookByBookId(bookId) {
     return ids;
   }
 
-  function getReaderHistoryIds(user) {
-    if (!user || user.role !== "reader") return [];
+function getReaderHistoryIds(user) {
+  if (!user || user.role !== "reader") return [];
 
-    const reservationIds = getReservationsAll()
-      .filter((entry) => normalizeEmail(entry.email) === user.email)
-      .map((entry) => entry.bookId);
+  const reservationIds = API_USER_RESERVATIONS.map((entry) =>
+    String(entry.bookId || entry.book_id)
+  );
 
-    const circulationIds = getCirculation()
-      .filter((entry) => normalizeEmail(entry.borrowerEmail) === user.email)
-      .map((entry) => entry.bookId);
+  const loanIds = API_USER_LOANS.map((entry) =>
+    String(entry.bookId || entry.book_id)
+  );
 
-    return [...new Set([...reservationIds, ...circulationIds])];
-  }
+  return [...new Set([...reservationIds, ...loanIds])];
+}
 
   function inferRecommendationProfile(seedBooks, searchHistory) {
     const searchable = [
@@ -1731,7 +1383,6 @@ function getBookByBookId(bookId) {
         const result = await loginApi({ email, password, role });
         const sessionUser = buildSessionFromApiUser(result.user);
 
-        syncUserToLocalDirectory(sessionUser);
         setUser(sessionUser);
 
         toast(role === "admin" ? "Admin access granted." : "Welcome back to Nocturne Library.");
@@ -1771,7 +1422,6 @@ function getBookByBookId(bookId) {
 
         const sessionUser = buildSessionFromApiUser(result.user);
 
-        syncUserToLocalDirectory(sessionUser);
         setUser(sessionUser);
 
         toast("Reader account created.");
@@ -1813,7 +1463,6 @@ function getBookByBookId(bookId) {
 
         const sessionUser = buildSessionFromApiUser(result.user);
 
-        syncUserToLocalDirectory(sessionUser);
         setUser(sessionUser);
 
         toast("Admin account created.");
@@ -2002,7 +1651,7 @@ function getBookByBookId(bookId) {
         <div>
           <div class="eyebrow">Admin desk</div>
           <h2>Circulation, catalog, and account records</h2>
-          <p>Use this frontend control center to add books, check titles in and out, view who currently has a book, create future-ready admin workflows, and manage account deletion. Later, these same actions can be connected to your database.</p>
+          <p>Use this admin desk to add books, check titles in and out, view who currently has a book, and manage reader and admin accounts through the backend and database.</p>
           <p class="account-subline">Signed in as ${escapeHtml(user.name)} · ${escapeHtml(user.email)}</p>
         </div>
         <div class="account-summary">
@@ -2026,7 +1675,7 @@ function getBookByBookId(bookId) {
           <article class="admin-panel">
             <span class="label">Catalog management</span>
             <h3>Add a new book</h3>
-            <p>This creates a frontend record now and can later be connected to a real database insert.</p>
+            <p>This creates a real backend record and saves it to the database.</p>
             <form id="adminAddBookForm" class="admin-form two-col">
               <div class="form-group">
                 <label for="adminBookTitle">Title</label>
@@ -2075,7 +1724,7 @@ function getBookByBookId(bookId) {
               </div>
               <div class="full-width split-actions">
                 <button class="btn" type="submit">Add book to catalog</button>
-                <span class="inline-stat">Frontend-ready for future database hookup</span>
+                <span class="inline-stat">Saved through backend API</span>
               </div>
             </form>
           </article>
@@ -2108,7 +1757,7 @@ function getBookByBookId(bookId) {
             </form>
 
             <div class="notice-banner">
-              Admin accounts can be created from the login page with the special admin creation key. Reader and admin accounts can both be deleted below.
+              Admin accounts can be created from the login page with the admin creation key. Reader and admin accounts can both be deleted below.
             </div>
           </article>
         </div>
@@ -2194,7 +1843,7 @@ if (addForm) {
 
     const checkoutForm = $("#adminCheckoutForm");
     if (checkoutForm) {
-      checkoutForm.addEventListener("submit", (event) => {
+      checkoutForm.addEventListener("submit", async (event) => {
         event.preventDefault();
         const bookId = $("#checkoutBook").value;
         const readerId = $("#checkoutReader").value;
@@ -2204,7 +1853,7 @@ if (addForm) {
           return;
         }
 
-        checkOutBook(bookId, readerId, $("#checkoutDays").value);
+        await checkOutBook(bookId, readerId, $("#checkoutDays").value);
         checkoutForm.reset();
         $("#checkoutDays").value = "14";
       });
@@ -2215,59 +1864,77 @@ if (addForm) {
     });
 
     $all(".js-delete-reader", shell).forEach((button) => {
-      button.addEventListener("click", () => {
+      button.addEventListener("click", async () => {
         const reader = findReaderById(button.dataset.readerId);
         if (!reader) return;
-        const confirmed = window.confirm(`Delete reader account for ${reader.name}? This will also clear reservations and active loans in this frontend demo.`);
+
+        const confirmed = window.confirm(`Delete reader account for ${reader.name}?`);
         if (!confirmed) return;
-        const result = deleteReaderAccount(reader.id, user.email);
-        if (result.ok) {
-          toast("Reader account deleted.");
-          renderAdminPage();
-          renderCatalogPage();
-          renderBookDetailPage();
-          renderAccountPage();
+
+        const result = await deleteReaderAccount(reader.id);
+
+        if (!result.ok) {
+          toast(result.message);
+          return;
+        }
+
+        toast("Reader account deleted.");
+        renderAdminPage();
+        renderCatalogPage();
+        renderBookDetailPage();
+        renderAccountPage();
+
+        if (result.loggedOut) {
+          setTimeout(() => {
+            window.location.href = "login.html";
+          }, 250);
         }
       });
     });
 
     $all(".js-delete-admin", shell).forEach((button) => {
-  button.addEventListener("click", async () => {
-    const confirmed = window.confirm("Delete this admin account?");
-    if (!confirmed) return;
-
-    const result = await deleteAdminAccount(button.dataset.adminId);
-
-    if (!result.ok) {
-      toast(result.message);
-      return;
-    }
-
-    toast("Admin account deleted.");
-    updateHeaderUserState();
-    renderAdminPage();
-
-    if (result.loggedOut) {
-      setTimeout(() => {
-        window.location.href = "login.html";
-      }, 250);
-    }
-  });
-});
-
-    const deleteCurrentAdmin = $(".js-delete-current-admin", shell);
-    if (deleteCurrentAdmin) {
-      deleteCurrentAdmin.addEventListener("click", () => {
-        const confirmed = window.confirm("Delete the current admin account?");
+      button.addEventListener("click", async () => {
+        const confirmed = window.confirm("Delete this admin account?");
         if (!confirmed) return;
-        const result = deleteAdminAccount(user.id);
-        if (result.ok) {
-          toast("Admin account deleted.");
-          updateHeaderUserState();
+
+        const result = await deleteAdminAccount(button.dataset.adminId);
+
+        if (!result.ok) {
+          toast(result.message);
+          return;
+        }
+
+        toast("Admin account deleted.");
+        updateHeaderUserState();
+        renderAdminPage();
+
+        if (result.loggedOut) {
           setTimeout(() => {
             window.location.href = "login.html";
           }, 250);
         }
+      });
+    });
+
+    const deleteCurrentAdmin = $(".js-delete-current-admin", shell);
+    if (deleteCurrentAdmin) {
+      deleteCurrentAdmin.addEventListener("click", async () => {
+        const confirmed = window.confirm("Delete the current admin account?");
+        if (!confirmed) return;
+
+        const result = await deleteAdminAccount(user.id);
+
+        if (!result.ok) {
+          toast(result.message);
+          return;
+        }
+
+        toast("Admin account deleted.");
+        updateHeaderUserState();
+
+        setTimeout(() => {
+          window.location.href = "login.html";
+        }, 250);
       });
     }
   }
@@ -2282,7 +1949,6 @@ if (addForm) {
   }
 
 async function init() {
-  ensureSeedData();
   setYear();
   activateNav();
   handleHomepageSearch();
