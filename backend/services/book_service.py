@@ -68,3 +68,75 @@ def search_books(query):
 
     conn.close()
     return all_books
+
+def add_book(data):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    title = str(data.get("title") or "").strip()
+    author = str(data.get("author") or "").strip()
+    collection_name = str(data.get("collection_name") or "").strip()
+    category = str(data.get("category") or "").strip()
+    book_format = str(data.get("book_format") or "").strip()
+    publication_year = data.get("publication_year")
+    pages = data.get("pages")
+    cover_url = str(data.get("cover_url") or "").strip()
+    blurb = str(data.get("blurb") or "").strip()
+    description = str(data.get("description") or "").strip()
+    accent = str(data.get("accent") or "gold").strip()
+
+    if not title or not author:
+        conn.close()
+        return {"error": "title and author are required"}
+
+    cursor.execute(
+        """
+        INSERT INTO Books (
+            title,
+            author,
+            category,
+            collection_name,
+            book_format,
+            publication_year,
+            pages,
+            rating,
+            cover_url,
+            blurb,
+            description,
+            accent
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            title,
+            author,
+            category or None,
+            collection_name or None,
+            book_format or None,
+            int(publication_year) if publication_year not in (None, "",) else None,
+            int(pages) if pages not in (None, "",) else None,
+            4.5,
+            cover_url or None,
+            blurb or None,
+            description or None,
+            accent or "gold",
+        )
+    )
+
+    book_id = cursor.lastrowid
+
+    cursor.execute(
+        """
+        INSERT INTO BookCopies (book_id, status, location)
+        VALUES (?, 'available', 'Main Shelf')
+        """,
+        (book_id,)
+    )
+
+    conn.commit()
+    conn.close()
+
+    return {
+        "message": "Book added successfully",
+        "book_id": book_id
+    }

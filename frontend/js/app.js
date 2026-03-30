@@ -549,7 +549,7 @@ async function fetchBooksFromApi() {
   }
 
   function getAllBooks() {
-  return [...API_BOOKS, ...getAddedBooks()].map((book) => {
+  return [...API_BOOKS].map((book) => {
     const lookupId = book.book_id || book.id;
     const loan = getLoanForBook(lookupId);
 
@@ -962,39 +962,49 @@ function getBookByBookId(bookId) {
     toast("Your recommendation has been added.");
   }
 
-  function addBook(payload) {
-    const books = getAddedBooks();
-    const idBase = slugify(payload.title) || "book";
-    const id = books.some((book) => book.id === idBase) || API_BOOKS.some((book) => book.id === idBase)
-      ? `${idBase}-${Date.now().toString(36)}`
-      : idBase;
+  async function addBook(payload) {
+  const user = getUser();
 
-    books.unshift({
-      id,
+  if (!user || user.role !== "admin") {
+    toast("Admin access is required to add books.");
+    return false;
+  }
+
+  try {
+    const result = await apiPost("/api/books", {
       title: payload.title,
       author: payload.author,
-      collection: payload.collection,
-      genre: payload.genre,
-      format: payload.format,
-      year: Number(payload.year) || new Date().getFullYear(),
-      pages: Number(payload.pages) || 0,
-      rating: 4.5,
-      cover:
-        payload.cover ||
-        "https://images.pexels.com/photos/16092309/pexels-photo-16092309.jpeg?cs=srgb&dl=pexels-helloaesthe-16092309.jpg&fm=jpg",
-      accent: payload.accent || "gold",
+      collection_name: payload.collection,
+      category: payload.genre,
+      book_format: payload.format,
+      publication_year: payload.year,
+      pages: payload.pages,
+      cover_url: payload.cover,
       blurb: payload.blurb,
       description: payload.description,
-      createdAt: new Date().toISOString(),
-      addedBy: (getUser() || {}).email || "admin"
+      accent: payload.accent || "gold"
     });
 
-    saveAddedBooks(books);
-    toast("New book added to the library frontend catalog.");
+    await fetchBooksFromApi();
+    await fetchOpenLoansFromApi();
+
+    const currentUser = getUser();
+    if (currentUser && currentUser.role === "reader") {
+      await fetchUserLoansFromApi();
+      await fetchUserReservationsFromApi();
+    }
+
+    toast(result.message || "Book added successfully.");
     renderAdminPage();
     renderCatalogPage();
     renderBookDetailPage();
+    renderTopPicks();
+    return true;
+  } catch (error) {
+    toast(error.message);
+    return false;
   }
+}
 
   async function checkOutBook(bookId, readerId, dueDays) {
   const user = getUser();
@@ -2152,30 +2162,35 @@ function getBookByBookId(bookId) {
       </section>
     `;
 
-    const addForm = $("#adminAddBookForm");
-    if (addForm) {
-      addForm.addEventListener("submit", (event) => {
-        event.preventDefault();
-        addBook({
-          title: $("#adminBookTitle").value.trim(),
-          author: $("#adminBookAuthor").value.trim(),
-          collection: $("#adminBookCollection").value.trim(),
-          genre: $("#adminBookGenre").value.trim(),
-          format: $("#adminBookFormat").value,
-          year: $("#adminBookYear").value,
-          pages: $("#adminBookPages").value,
-          cover: $("#adminBookCover").value.trim(),
-          blurb: $("#adminBookBlurb").value.trim(),
-          description: $("#adminBookDescription").value.trim()
-        });
-        addForm.reset();
-        $("#adminBookCollection").value = "Curator's Cabinet";
-        $("#adminBookGenre").value = "Dark Academia";
-        $("#adminBookFormat").value = "Hardcover";
-        $("#adminBookYear").value = "2026";
-        $("#adminBookPages").value = "320";
-      });
-    }
+const addForm = $("#adminAddBookForm");
+if (addForm) {
+  addForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+
+    const ok = await addBook({
+      title: $("#adminBookTitle").value.trim(),
+      author: $("#adminBookAuthor").value.trim(),
+      collection: $("#adminBookCollection").value.trim(),
+      genre: $("#adminBookGenre").value.trim(),
+      format: $("#adminBookFormat").value,
+      year: $("#adminBookYear").value,
+      pages: $("#adminBookPages").value,
+      cover: $("#adminBookCover").value.trim(),
+      blurb: $("#adminBookBlurb").value.trim(),
+      description: $("#adminBookDescription").value.trim(),
+      accent: "gold"
+    });
+
+    if (!ok) return;
+
+    addForm.reset();
+    $("#adminBookCollection").value = "Curator's Cabinet";
+    $("#adminBookGenre").value = "Dark Academia";
+    $("#adminBookFormat").value = "Hardcover";
+    $("#adminBookYear").value = "2026";
+    $("#adminBookPages").value = "320";
+  });
+}
 
     const checkoutForm = $("#adminCheckoutForm");
     if (checkoutForm) {
