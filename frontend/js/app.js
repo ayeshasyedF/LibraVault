@@ -19,6 +19,8 @@
   let API_USER_RESERVATIONS = [];
   let API_USER_LOANS = [];
   let API_OPEN_LOANS = [];
+  let API_READERS = [];
+  let API_ADMINS = [];
   const REC_POOLS = (window.LibraryData && window.LibraryData.recommendationPools) || {};
 
   function $(selector, scope = document) {
@@ -260,6 +262,69 @@ async function loginApi({ email, password, role }) {
     password,
     role
   });
+}
+async function fetchReadersFromApi() {
+  try {
+    const response = await fetch("/api/users/readers");
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const data = await response.json();
+
+    API_READERS = Array.isArray(data)
+      ? data.map((user) => ({
+          id: String(user.user_id),
+          name: user.full_name,
+          email: normalizeEmail(user.email),
+          memberId: user.member_id,
+          role: user.role
+        }))
+      : [];
+  } catch (error) {
+    console.error("Could not load readers from API:", error);
+    API_READERS = [];
+  }
+}
+
+async function fetchAdminsFromApi() {
+  try {
+    const response = await fetch("/api/users/admins");
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const data = await response.json();
+
+    API_ADMINS = Array.isArray(data)
+      ? data.map((user) => ({
+          id: String(user.user_id),
+          name: user.full_name,
+          email: normalizeEmail(user.email),
+          staffId: user.staff_id,
+          role: user.role
+        }))
+      : [];
+  } catch (error) {
+    console.error("Could not load admins from API:", error);
+    API_ADMINS = [];
+  }
+}
+
+async function deleteUserApi(userId) {
+  const response = await fetch(`/api/users/${encodeURIComponent(userId)}`, {
+    method: "DELETE"
+  });
+
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(data.error || data.message || `Request failed with status ${response.status}`);
+  }
+
+  return data;
 }
 
 async function fetchUserReservationsFromApi() {
@@ -735,52 +800,45 @@ function getBookByBookId(bookId) {
     return { ok: true, account };
   }
 
-  function deleteReaderAccount(readerId, actorLabel) {
-    const readers = getReaders();
-    const reader = readers.find((entry) => entry.id === readerId);
-    if (!reader) {
-      return { ok: false, message: "That reader account could not be found." };
-    }
+  async function deleteReaderAccount(readerId) {
+  try {
+    const result = await deleteUserApi(readerId);
 
-    saveReaders(readers.filter((entry) => entry.id !== readerId));
-    saveReservations(
-      getReservationsAll().filter((entry) => normalizeEmail(entry.email) !== normalizeEmail(reader.email))
-    );
-
-    const circulation = getCirculation();
-    circulation.forEach((loan) => {
-      if (!loan.returnedAt && normalizeEmail(loan.borrowerEmail) === normalizeEmail(reader.email)) {
-        loan.returnedAt = new Date().toISOString();
-        loan.returnedBy = actorLabel || "Account deletion";
-      }
-    });
-    saveCirculation(circulation);
+    await fetchReadersFromApi();
+    await fetchOpenLoansFromApi();
+    await fetchUserLoansFromApi();
+    await fetchUserReservationsFromApi();
+    await fetchBooksFromApi();
 
     const currentUser = getUser();
-    if (currentUser && currentUser.role === "reader" && currentUser.id === readerId) {
+    if (currentUser && currentUser.role === "reader" && String(currentUser.id) === String(readerId)) {
       setUser(null);
-      return { ok: true, loggedOut: true, account: reader };
+      return { ok: true, loggedOut: true, result };
     }
 
-    return { ok: true, account: reader };
+    return { ok: true, result };
+  } catch (error) {
+    return { ok: false, message: error.message };
   }
+}
 
-  function deleteAdminAccount(adminId) {
-    const admins = getAdmins();
-    const admin = admins.find((entry) => entry.id === adminId);
-    if (!admin) {
-      return { ok: false, message: "That admin account could not be found." };
-    }
+  async function deleteAdminAccount(adminId) {
+  try {
+    const result = await deleteUserApi(adminId);
 
-    saveAdmins(admins.filter((entry) => entry.id !== adminId));
+    await fetchAdminsFromApi();
+
     const currentUser = getUser();
-    if (currentUser && currentUser.role === "admin" && currentUser.id === adminId) {
+    if (currentUser && currentUser.role === "admin" && String(currentUser.id) === String(adminId)) {
       setUser(null);
-      return { ok: true, loggedOut: true, account: admin };
+      return { ok: true, loggedOut: true, result };
     }
 
-    return { ok: true, account: admin };
+    return { ok: true, result };
+  } catch (error) {
+    return { ok: false, message: error.message };
   }
+}
 
   function updateHeaderUserState() {
   const user = getUser();
@@ -1405,17 +1463,21 @@ function getBookByBookId(bookId) {
 
     const deleteButton = $(".js-delete-current-reader", accountShell);
     if (deleteButton) {
-      deleteButton.addEventListener("click", () => {
+        deleteButton.addEventListener("click", async () => {
         const confirmed = window.confirm("Delete this reader account? This demo will also clear your reservations and active loans.");
         if (!confirmed) return;
-        const result = deleteReaderAccount(user.id, user.email);
-        if (result.ok) {
-          toast("Reader account deleted.");
-          updateHeaderUserState();
-          setTimeout(() => {
-            window.location.href = "login.html";
-          }, 250);
+        const result = await deleteReaderAccount(user.id);
+        if (!result.ok) {
+          toast(result.message);
+          return;
         }
+
+        toast("Reader account deleted.");
+        updateHeaderUserState();
+
+        setTimeout(() => {
+          window.location.href = "login.html";
+        }, 250);
       });
     }
   }
@@ -1810,18 +1872,18 @@ function getBookByBookId(bookId) {
     }
 
     const books = getAllBooks();
-    const readers = getReaders();
-    const admins = getAdmins();
+    const readers = API_READERS;
+    const admins = API_ADMINS;
     const openLoans = getOpenCirculation();
     const availableBooks = books.filter((book) => book.available);
 
     const checkoutOptions = availableBooks.length
-      ? availableBooks
-          .map(
-            (book) => `<option value="${escapeHtml(String(book.book_id || book.id))}">${escapeHtml(book.title)} — ${escapeHtml(book.author)}</option>`
-          )
-          .join("")
-      : `<option value="">No available titles</option>`;
+  ? availableBooks
+      .map(
+        (book) => `<option value="${escapeHtml(String(book.book_id || ""))}">${escapeHtml(book.title)} — ${escapeHtml(book.author)}</option>`
+      )
+      .join("")
+  : `<option value="">No available titles</option>`;
 
     const readerOptions = readers.length
       ? readers
@@ -2155,26 +2217,28 @@ function getBookByBookId(bookId) {
     });
 
     $all(".js-delete-admin", shell).forEach((button) => {
-      button.addEventListener("click", () => {
-        const admin = findAdminById(button.dataset.adminId);
-        if (!admin) return;
-        const confirmed = window.confirm(`Delete admin account for ${admin.name}?`);
-        if (!confirmed) return;
-        const result = deleteAdminAccount(admin.id);
-        if (result.ok && result.loggedOut) {
-          toast("Admin account deleted.");
-          updateHeaderUserState();
-          setTimeout(() => {
-            window.location.href = "login.html";
-          }, 250);
-          return;
-        }
-        if (result.ok) {
-          toast("Admin account deleted.");
-          renderAdminPage();
-        }
-      });
-    });
+  button.addEventListener("click", async () => {
+    const confirmed = window.confirm("Delete this admin account?");
+    if (!confirmed) return;
+
+    const result = await deleteAdminAccount(button.dataset.adminId);
+
+    if (!result.ok) {
+      toast(result.message);
+      return;
+    }
+
+    toast("Admin account deleted.");
+    updateHeaderUserState();
+    renderAdminPage();
+
+    if (result.loggedOut) {
+      setTimeout(() => {
+        window.location.href = "login.html";
+      }, 250);
+    }
+  });
+});
 
     const deleteCurrentAdmin = $(".js-delete-current-admin", shell);
     if (deleteCurrentAdmin) {
@@ -2214,6 +2278,8 @@ async function init() {
   await fetchUserReservationsFromApi();
   await fetchUserLoansFromApi();
   await fetchOpenLoansFromApi();
+  await fetchReadersFromApi();
+  await fetchAdminsFromApi();
 
   renderTopPicks();
   renderCatalogPage();

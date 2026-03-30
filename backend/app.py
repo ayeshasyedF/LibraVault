@@ -5,6 +5,7 @@ from config import Config
 from routes.book_routes import book_routes
 from routes.loan_routes import loan_routes
 from routes.auth_routes import auth_routes
+from routes.user_routes import user_routes
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 FRONTEND_DIR = BASE_DIR / "frontend"
@@ -21,6 +22,7 @@ app.config.from_object(Config)
 app.register_blueprint(book_routes, url_prefix="/api")
 app.register_blueprint(loan_routes, url_prefix="/api")
 app.register_blueprint(auth_routes, url_prefix="/api")
+app.register_blueprint(user_routes, url_prefix="/api")
 
 @app.route("/")
 def home():
